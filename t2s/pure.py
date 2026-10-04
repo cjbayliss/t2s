@@ -91,12 +91,7 @@ def wrap_offsets(text: str, width: int) -> tuple[tuple[str, int], ...]:
     return tuple(lines()) or (("", 0),)
 
 
-def cache_key(
-    text: str,
-    voice: str | None,
-    rate: int | None,
-    data_format: str = "LEI16@22050",
-) -> str:
+def cache_key(text: str, voice: str | None, rate: int | None, data_format: str) -> str:
     material = f"{voice or ''}|{rate or ''}|{data_format}|{text}"
     return hashlib.sha1(material.encode("utf-8")).hexdigest()
 

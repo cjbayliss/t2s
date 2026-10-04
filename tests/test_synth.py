@@ -37,7 +37,9 @@ def wait_until(
 def spawn_worker(
     tmp_path: Path, paragraphs: list[str], ahead: int = 3
 ) -> tuple[SynthWorker, Path]:
-    cache_keys = [cache_key(paragraph, None, None) for paragraph in paragraphs]
+    cache_keys = [
+        cache_key(paragraph, None, None, "LEI16@22050") for paragraph in paragraphs
+    ]
     cache = tmp_path / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     worker = make_worker(
@@ -54,11 +56,11 @@ def rendered_path(worker: SynthWorker, index: int) -> Path:
 
 
 def test_cache_key_fields() -> None:
-    base = cache_key("hello world", None, None)
-    assert cache_key("hello world", None, None) == base
-    assert cache_key("hello world", "Fred", None) != base
-    assert cache_key("hello world", None, 180) != base
-    assert cache_key("hello  world", None, None) != base
+    base = cache_key("hello world", None, None, "LEI16@22050")
+    assert cache_key("hello world", None, None, "LEI16@22050") == base
+    assert cache_key("hello world", "Fred", None, "LEI16@22050") != base
+    assert cache_key("hello world", None, 180, "LEI16@22050") != base
+    assert cache_key("hello  world", None, None, "LEI16@22050") != base
 
 
 def test_cache_key_depends_on_data_format() -> None:

@@ -118,9 +118,10 @@ def test_stream_chunks_concatenate_to_body_plus_gap_at_any_request_sizes(
 def test_cache_key_is_deterministic_and_field_sensitive(
     text: str, voice: str | None, rate: int | None
 ) -> None:
-    key = cache_key(text, voice, rate)
-    assert cache_key(text, voice, rate) == key
-    assert cache_key(text + "x", voice, rate) != key
-    assert cache_key(text, (voice or "") + "x", rate) != key
-    assert cache_key(text, voice, (rate or 0) + 1) != key
+    fmt = "LEI16@22050"
+    key = cache_key(text, voice, rate, fmt)
+    assert cache_key(text, voice, rate, fmt) == key
+    assert cache_key(text + "x", voice, rate, fmt) != key
+    assert cache_key(text, (voice or "") + "x", rate, fmt) != key
+    assert cache_key(text, voice, (rate or 0) + 1, fmt) != key
     assert cache_key(text, voice, rate, "LEI16@999") != key
