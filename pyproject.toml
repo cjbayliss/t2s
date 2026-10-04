@@ -14,10 +14,10 @@ dependencies = ["miniaudio>=1.61"]
 t2s = "t2s.cli:main"
 
 [project.optional-dependencies]
-test = ["pytest>=8"]
+test = ["hypothesis>=6", "pytest>=8"]
 
 [dependency-groups]
-dev = ["mypy>=1.15", "ruff>=0.9"]
+dev = ["mypy>=1.15", "pytest-cov>=6", "ruff>=0.9"]
 
 [tool.setuptools]
 packages = ["t2s"]
