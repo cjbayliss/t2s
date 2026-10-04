@@ -23,23 +23,28 @@ def prune_cache(cache_dir: Path, limit_mb: float) -> None:
         part.unlink(missing_ok=True)
     if limit_mb <= 0:
         return
-    wavs = ((p, p.stat()) for p in cache_dir.glob("*.wav") if p.is_file())
-    files = [CacheFile(p, st.st_size, st.st_mtime) for p, st in wavs]
-    for path in evictions(files, limit_mb * 1024 * 1024):
+    wav_files = (
+        (path, path.stat()) for path in cache_dir.glob("*.wav") if path.is_file()
+    )
+    cache_files = [
+        CacheFile(path, stat_info.st_size, stat_info.st_mtime)
+        for path, stat_info in wav_files
+    ]
+    for path in evictions(cache_files, limit_mb * 1024 * 1024):
         path.unlink(missing_ok=True)
 
 
 class SynthWorker(threading.Thread):
     def __init__(
         self,
-        paras: Sequence[str],
+        paragraphs: Sequence[str],
         keys: Sequence[str],
         cache_dir: Path,
         say_cmd: Sequence[str],
         ahead: int = 3,
     ) -> None:
         super().__init__(daemon=True)
-        self._paras = paras
+        self._paragraphs = paragraphs
         self._keys = keys
         self.cache_dir = cache_dir
         self._say_cmd = say_cmd
@@ -49,30 +54,30 @@ class SynthWorker(threading.Thread):
         self._failed: dict[int, str] = {}
         self._stop_flag = False
 
-    def path_for(self, idx: int) -> Path:
-        return self.cache_dir / f"{self._keys[idx]}.wav"
+    def path_for(self, index: int) -> Path:
+        return self.cache_dir / f"{self._keys[index]}.wav"
 
-    def set_cursor(self, idx: int) -> None:
+    def set_cursor(self, index: int) -> None:
         with self._cond:
-            if self._cursor != idx:
-                self._cursor = idx
+            if self._cursor != index:
+                self._cursor = index
                 self._cond.notify_all()
 
-    def clear_failure(self, idx: int) -> None:
+    def clear_failure(self, index: int) -> None:
         with self._cond:
-            if self._failed.pop(idx, None) is not None:
+            if self._failed.pop(index, None) is not None:
                 self._cond.notify_all()
 
-    def ensure(self, idx: int) -> Path:
+    def ensure(self, index: int) -> Path:
         with self._cond:
             while True:
-                path = self.path_for(idx)
+                path = self.path_for(index)
                 if path.exists():
                     return path
-                if idx in self._failed:
-                    raise SynthesisError(idx, self._failed[idx])
+                if index in self._failed:
+                    raise SynthesisError(index, self._failed[index])
                 if self._stop_flag:
-                    raise SynthesisError(idx, "shutting down")
+                    raise SynthesisError(index, "shutting down")
                 self._cond.wait(0.1)
 
     def stop(self) -> None:
@@ -92,37 +97,37 @@ class SynthWorker(threading.Thread):
             self._render(target)
 
     def _next_missing(self) -> int | None:
-        for idx in prefetch_window(self._cursor, self.ahead, len(self._keys)):
-            if idx not in self._failed and not self.path_for(idx).exists():
-                return idx
+        for index in prefetch_window(self._cursor, self.ahead, len(self._keys)):
+            if index not in self._failed and not self.path_for(index).exists():
+                return index
         return None
 
-    def _render(self, idx: int) -> None:
-        path = self.path_for(idx)
-        tmp = path.with_name(path.name + ".part")
+    def _render(self, index: int) -> None:
+        path = self.path_for(index)
+        part_path = path.with_name(path.name + ".part")
         proc = subprocess.Popen(
-            (*self._say_cmd, "-o", str(tmp)),
+            (*self._say_cmd, "-o", str(part_path)),
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
-        err = b""
+        stderr_bytes = b""
         stdin = proc.stdin
         if stdin is not None:
             with contextlib.suppress(BrokenPipeError, OSError):
-                stdin.write(self._paras[idx].encode("utf-8"))
+                stdin.write(self._paragraphs[index].encode("utf-8"))
                 stdin.close()
         stderr = proc.stderr
         if stderr is not None:
             with contextlib.suppress(OSError):
-                err = stderr.read() or b""
-        rc = proc.wait()
-        ok = rc == 0 and tmp.exists()
-        if ok:
-            tmp.replace(path)
+                stderr_bytes = stderr.read() or b""
+        exit_code = proc.wait()
+        succeeded = exit_code == 0 and part_path.exists()
+        if succeeded:
+            part_path.replace(path)
         with self._cond:
-            if not ok:
-                self._failed[idx] = " ".join(err.decode("utf-8", "replace").split())[
-                    :200
-                ]
+            if not succeeded:
+                self._failed[index] = " ".join(
+                    stderr_bytes.decode("utf-8", "replace").split()
+                )[:200]
             self._cond.notify_all()

@@ -62,7 +62,7 @@ def test_args_from_namespace_reads_every_field() -> None:
         args.cache_limit_mb,
         args.say_bin,
         args.play_bin,
-        args.gap,
+        args.gap_ms,
         args.data_format,
         args.player,
     ) == (
@@ -96,7 +96,7 @@ def test_args_defaults_survive_the_namespace_roundtrip() -> None:
     assert args.cache_limit_mb == 256.0
     assert args.say_bin is None
     assert args.play_bin is None
-    assert args.gap == 0
+    assert args.gap_ms == 0
     assert args.data_format is None
     assert args.player == "auto"
 

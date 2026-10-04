@@ -35,10 +35,12 @@ def comment_lines(source: str) -> tuple[int, ...]:
 
 
 def sources() -> list[Path]:
-    return sorted({p for root in SOURCE_ROOTS for p in root.rglob("*.py")})
+    return sorted({path for root in SOURCE_ROOTS for path in root.rglob("*.py")})
 
 
-@pytest.mark.parametrize("path", sources(), ids=lambda p: str(p.relative_to(REPO)))
+@pytest.mark.parametrize(
+    "path", sources(), ids=lambda path: str(path.relative_to(REPO))
+)
 def test_no_docstrings_or_comments(path: Path) -> None:
     source = path.read_text(encoding="utf-8")
     sites = [f"docstring at line {n}" for n in docstring_lines(source)]

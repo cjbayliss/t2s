@@ -37,7 +37,7 @@ def spawn(
     err_path = tmp_path / "stderr.log"
     env = os.environ.copy()
     env.update(env_extra or {})
-    with open(err_path, "wb") as err_f:
+    with open(err_path, "wb") as err_file:
         proc = subprocess.Popen(
             [
                 sys.executable,
@@ -53,7 +53,7 @@ def spawn(
             ],
             stdin=slave,
             stdout=out_w,
-            stderr=err_f,
+            stderr=err_file,
             env=env,
             close_fds=True,
             cwd=REPO,
@@ -75,14 +75,14 @@ def read_loop(fd: int, buf: bytearray) -> None:
 
 
 def cleanup(
-    proc: subprocess.Popen[bytes], master: int, out_r: int, thread: threading.Thread
+    proc: subprocess.Popen[bytes], master: int, out_r: int, reader: threading.Thread
 ) -> None:
     if proc.poll() is None:
         proc.kill()
         proc.wait()
     os.close(master)
     os.close(out_r)
-    thread.join(timeout=2)
+    reader.join(timeout=2)
 
 
 def test_space_pauses_replays_and_q_quits(fakes: Fakes, tmp_path: Path) -> None:
@@ -92,8 +92,8 @@ def test_space_pauses_replays_and_q_quits(fakes: Fakes, tmp_path: Path) -> None:
 
     proc, master, out_r, _ = spawn(fakes, tmp_path, doc, env)
     buf = bytearray()
-    t = threading.Thread(target=read_loop, args=(out_r, buf), daemon=True)
-    t.start()
+    reader = threading.Thread(target=read_loop, args=(out_r, buf), daemon=True)
+    reader.start()
 
     try:
         assert wait_until(lambda: "¶ 1/1".encode() in buf), bytes(buf)
@@ -119,7 +119,7 @@ def test_space_pauses_replays_and_q_quits(fakes: Fakes, tmp_path: Path) -> None:
         assert proc.wait(timeout=10) == 0
         assert "stopped at ¶ 1/1".encode() in bytes(buf)
     finally:
-        cleanup(proc, master, out_r, t)
+        cleanup(proc, master, out_r, reader)
 
 
 def test_chained_advance_without_keys(fakes: Fakes, tmp_path: Path) -> None:
@@ -129,8 +129,8 @@ def test_chained_advance_without_keys(fakes: Fakes, tmp_path: Path) -> None:
 
     proc, master, out_r, _ = spawn(fakes, tmp_path, doc, env)
     buf = bytearray()
-    t = threading.Thread(target=read_loop, args=(out_r, buf), daemon=True)
-    t.start()
+    reader = threading.Thread(target=read_loop, args=(out_r, buf), daemon=True)
+    reader.start()
 
     try:
         assert wait_until(lambda: "¶ 1/2".encode() in buf), bytes(buf)
@@ -139,8 +139,8 @@ def test_chained_advance_without_keys(fakes: Fakes, tmp_path: Path) -> None:
             lambda: play_log.exists() and len(play_log.read_text().splitlines()) == 2
         ), "both paragraphs streamed"
         os.write(master, b"q")
-        rc = proc.wait(timeout=10)
-        assert rc == 0, rc
+        exit_code = proc.wait(timeout=10)
+        assert exit_code == 0, exit_code
         assert texts_played(fakes.say_log, play_log) == [
             "First paragraph words.",
             "Second paragraph words.",
@@ -148,7 +148,7 @@ def test_chained_advance_without_keys(fakes: Fakes, tmp_path: Path) -> None:
     except OSError:
         pass
     finally:
-        cleanup(proc, master, out_r, t)
+        cleanup(proc, master, out_r, reader)
 
 
 def test_playback_error_waits_for_space(fakes: Fakes, tmp_path: Path) -> None:
@@ -158,8 +158,8 @@ def test_playback_error_waits_for_space(fakes: Fakes, tmp_path: Path) -> None:
     env, play_log = engine_log_env(tmp_path, delay="0.3", fail_at="1")
     proc, master, out_r, err_path = spawn(fakes, tmp_path, doc, env)
     buf = bytearray()
-    t = threading.Thread(target=read_loop, args=(out_r, buf), daemon=True)
-    t.start()
+    reader = threading.Thread(target=read_loop, args=(out_r, buf), daemon=True)
+    reader.start()
 
     try:
         assert wait_until(lambda: b"device error" in buf), bytes(buf)
@@ -172,4 +172,4 @@ def test_playback_error_waits_for_space(fakes: Fakes, tmp_path: Path) -> None:
         os.write(master, b"q")
         assert proc.wait(timeout=10) == 0
     finally:
-        cleanup(proc, master, out_r, t)
+        cleanup(proc, master, out_r, reader)

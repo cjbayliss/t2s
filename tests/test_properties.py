@@ -30,16 +30,16 @@ PARAGRAPHS = st.lists(PARAGRAPH_TEXT.filter(bool), max_size=6)
 
 @given(PARAGRAPHS)
 def test_split_paragraphs_round_trips_joined_normalized_paragraphs(
-    paras: list[str],
+    paragraphs: list[str],
 ) -> None:
-    assert split_paragraphs("\n\n".join(paras)) == tuple(paras)
+    assert split_paragraphs("\n\n".join(paragraphs)) == tuple(paragraphs)
 
 
 @given(st.text(max_size=400))
 def test_split_paragraphs_yields_normalized_nonempty_paragraphs(text: str) -> None:
-    paras = split_paragraphs(text)
-    assert all(p and normalize(p) == p for p in paras)
-    assert bool(paras) == bool(text.strip())
+    paragraphs = split_paragraphs(text)
+    assert all(p and normalize(p) == p for p in paragraphs)
+    assert bool(paragraphs) == bool(text.strip())
 
 
 @given(st.text(max_size=300), st.integers(1, 40))
@@ -87,13 +87,15 @@ def test_stream_chunks_concatenate_to_body_plus_gap_at_any_request_sizes(
     first: bytes, second: bytes, wants: list[int]
 ) -> None:
     gap = 7
-    s = stream_play(StreamState(), 0, Path("a"), first)
-    s = stream_prime(s, 1, Path("b"), second)
+    state = stream_play(StreamState(), 0, Path("a"), first)
+    state = stream_prime(state, 1, Path("b"), second)
     collected: list[bytes] = []
     events: list[EngineEvent] = []
     while True:
-        chunk, s, evs = stream_next_chunk(s, wants[len(collected) % len(wants)], gap)
-        events.extend(evs)
+        chunk, state, new_events = stream_next_chunk(
+            state, wants[len(collected) % len(wants)], gap
+        )
+        events.extend(new_events)
         if chunk is None:
             break
         collected.append(chunk)

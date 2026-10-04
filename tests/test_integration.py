@@ -12,7 +12,7 @@ DOC = (
     "Third and final paragraph."
 )
 
-PARAS = [
+PARAGRAPHS = [
     "First paragraph has a few words.",
     "Second paragraph is here with CRASHER inside.",
     "Third and final paragraph.",
@@ -33,93 +33,93 @@ def run_doc(
     args = [str(doc), "--cache-dir", str(cache), *extra]
     if player:
         args += ["--player", player]
-    r = run_t2s(args, fakes, env_extra=env_extra)
-    return r, cache
+    result = run_t2s(args, fakes, env_extra=env_extra)
+    return result, cache
 
 
 def test_reads_all_paragraphs_in_order(fakes: Fakes, tmp_path: Path) -> None:
     env, play_log = engine_log_env(tmp_path)
-    r, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
-    assert r.returncode == 0, r.stderr
+    result, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
+    assert result.returncode == 0, result.stderr
     for marker in ("¶ 1/3", "¶ 2/3", "¶ 3/3"):
-        assert marker in r.stdout
-    assert "done" in r.stdout
-    assert r.stderr == ""
-    assert texts_played(fakes.say_log, play_log) == PARAS
-    assert r.stdout.count("── ¶") >= 3
+        assert marker in result.stdout
+    assert "done" in result.stdout
+    assert result.stderr == ""
+    assert texts_played(fakes.say_log, play_log) == PARAGRAPHS
+    assert result.stdout.count("── ¶") >= 3
 
 
 def test_afplay_fallback_smoke(fakes: Fakes, tmp_path: Path) -> None:
-    r, _ = run_doc(fakes, tmp_path, DOC, "--player", "afplay")
-    assert r.returncode == 0, r.stderr
-    assert fakes.played_texts() == PARAS
+    result, _ = run_doc(fakes, tmp_path, DOC, "--player", "afplay")
+    assert result.returncode == 0, result.stderr
+    assert fakes.played_texts() == PARAGRAPHS
 
 
 def test_stdin_pipeline(fakes: Fakes, tmp_path: Path) -> None:
     env, play_log = engine_log_env(tmp_path)
     cache = tmp_path / "cache"
-    r = run_t2s(
+    result = run_t2s(
         ["--cache-dir", str(cache), "--player", "test"],
         fakes,
         env_extra=env,
         input=b"Piped in.\n\nSecond piped.\n",
     )
-    assert r.returncode == 0, r.stderr
-    assert "¶ 1/2" in r.stdout and "¶ 2/2" in r.stdout
+    assert result.returncode == 0, result.stderr
+    assert "¶ 1/2" in result.stdout and "¶ 2/2" in result.stdout
     assert texts_played(fakes.say_log, play_log) == ["Piped in.", "Second piped."]
 
 
 def test_start_flag_skips_earlier_paragraphs(fakes: Fakes, tmp_path: Path) -> None:
     env, play_log = engine_log_env(tmp_path)
-    r, _ = run_doc(
+    result, _ = run_doc(
         fakes, tmp_path, DOC, "--start", "2", "--player", "test", env_extra=env
     )
-    assert r.returncode == 0, r.stderr
-    assert "¶ 2/3" in r.stdout
-    assert "¶ 1/3" not in r.stdout
-    assert texts_played(fakes.say_log, play_log) == PARAS[1:]
+    assert result.returncode == 0, result.stderr
+    assert "¶ 2/3" in result.stdout
+    assert "¶ 1/3" not in result.stdout
+    assert texts_played(fakes.say_log, play_log) == PARAGRAPHS[1:]
 
 
 def test_start_out_of_range_is_usage_error(fakes: Fakes, tmp_path: Path) -> None:
-    r, _ = run_doc(fakes, tmp_path, DOC, "--start", "99")
-    assert r.returncode == 2
-    assert "out of range" in r.stderr
+    result, _ = run_doc(fakes, tmp_path, DOC, "--start", "99")
+    assert result.returncode == 2
+    assert "out of range" in result.stderr
 
 
 def test_missing_file_is_usage_error(fakes: Fakes) -> None:
-    r = run_t2s(["/nonexistent/nope.txt", "--cache-dir", "/tmp/t2s-x"], fakes)
-    assert r.returncode == 2
-    assert "cannot read" in r.stderr
+    result = run_t2s(["/nonexistent/nope.txt", "--cache-dir", "/tmp/t2s-x"], fakes)
+    assert result.returncode == 2
+    assert "cannot read" in result.stderr
 
 
 def test_empty_input_errors(fakes: Fakes, tmp_path: Path) -> None:
-    r, _ = run_doc(fakes, tmp_path, "\n\n   \n")
-    assert r.returncode == 1
-    assert "no text" in r.stderr
+    result, _ = run_doc(fakes, tmp_path, "\n\n   \n")
+    assert result.returncode == 1
+    assert "no text" in result.stderr
 
 
 def test_empty_stdin_errors(fakes: Fakes, tmp_path: Path) -> None:
     cache = tmp_path / "cache"
-    r = run_t2s(["--cache-dir", str(cache)], fakes, input=b"")
-    assert r.returncode == 1
-    assert "no text" in r.stderr
+    result = run_t2s(["--cache-dir", str(cache)], fakes, input=b"")
+    assert result.returncode == 1
+    assert "no text" in result.stderr
 
 
 def test_synthesis_failure_skips_paragraph(fakes: Fakes, tmp_path: Path) -> None:
     env, play_log = engine_log_env(tmp_path)
     env = dict(env, FAKE_SAY_FAIL_TEXT="CRASHER")
-    r, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
-    assert r.returncode == 0, r.stderr
-    assert "¶ 1/3" in r.stdout and "¶ 3/3" in r.stdout
-    assert "could not render" in r.stderr
-    assert "continuing with next paragraph" in r.stderr
-    assert texts_played(fakes.say_log, play_log) == [PARAS[0], PARAS[2]]
+    result, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
+    assert result.returncode == 0, result.stderr
+    assert "¶ 1/3" in result.stdout and "¶ 3/3" in result.stdout
+    assert "could not render" in result.stderr
+    assert "continuing with next paragraph" in result.stderr
+    assert texts_played(fakes.say_log, play_log) == [PARAGRAPHS[0], PARAGRAPHS[2]]
 
 
 def test_synthesis_failure_on_last_paragraph(fakes: Fakes, tmp_path: Path) -> None:
     env, _ = engine_log_env(tmp_path)
     env = dict(env, FAKE_SAY_FAIL_TEXT="CRASHER")
-    r, _ = run_doc(
+    result, _ = run_doc(
         fakes,
         tmp_path,
         "Only paragraph with CRASHER here.",
@@ -127,31 +127,31 @@ def test_synthesis_failure_on_last_paragraph(fakes: Fakes, tmp_path: Path) -> No
         "test",
         env_extra=env,
     )
-    assert r.returncode == 0
-    assert "could not render" in r.stderr
-    assert "done (with errors)" in r.stdout
+    assert result.returncode == 0
+    assert "could not render" in result.stderr
+    assert "done (with errors)" in result.stdout
 
 
 def test_playback_failure_continues_noninteractive(
     fakes: Fakes, tmp_path: Path
 ) -> None:
     env, play_log = engine_log_env(tmp_path, fail_at="2")
-    r, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
-    assert r.returncode == 0, r.stderr
-    assert "playback failed" in r.stderr
-    assert "continuing with next paragraph" in r.stderr
-    assert texts_played(fakes.say_log, play_log) == [PARAS[0], PARAS[2]]
+    result, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
+    assert result.returncode == 0, result.stderr
+    assert "playback failed" in result.stderr
+    assert "continuing with next paragraph" in result.stderr
+    assert texts_played(fakes.say_log, play_log) == [PARAGRAPHS[0], PARAGRAPHS[2]]
 
 
 def test_playback_failure_afplay_fallback(fakes: Fakes, tmp_path: Path) -> None:
-    r, _ = run_doc(
+    result, _ = run_doc(
         fakes, tmp_path, DOC, "--player", "afplay", env_extra={"FAKE_PLAY_FAIL_AT": "2"}
     )
-    assert r.returncode == 0, r.stderr
-    assert "playback failed" in r.stderr
-    assert "player exited with code 3" in r.stderr
-    assert "continuing with next paragraph" in r.stderr
-    assert fakes.played_texts() == PARAS
+    assert result.returncode == 0, result.stderr
+    assert "playback failed" in result.stderr
+    assert "player exited with code 3" in result.stderr
+    assert "continuing with next paragraph" in result.stderr
+    assert fakes.played_texts() == PARAGRAPHS
 
 
 def test_cache_reused_across_runs(fakes: Fakes, tmp_path: Path) -> None:
@@ -163,29 +163,31 @@ def test_cache_reused_across_runs(fakes: Fakes, tmp_path: Path) -> None:
 
     run_t2s(args, fakes, env_extra=env)
     deadline = time.monotonic() + 5
-    while len(list(cache.glob("*.wav"))) < len(PARAS) and time.monotonic() < deadline:
+    while (
+        len(list(cache.glob("*.wav"))) < len(PARAGRAPHS) and time.monotonic() < deadline
+    ):
         time.sleep(0.02)
     renders_after_first = fakes.say_log.read_text().splitlines()
 
-    r = run_t2s(args, fakes, env_extra=env)
-    assert r.returncode == 0, r.stderr
+    result = run_t2s(args, fakes, env_extra=env)
+    assert result.returncode == 0, result.stderr
     renders_after_second = fakes.say_log.read_text().splitlines()
 
     assert renders_after_second == renders_after_first
-    assert texts_played(fakes.say_log, play_log) == PARAS + PARAS
+    assert texts_played(fakes.say_log, play_log) == PARAGRAPHS + PARAGRAPHS
 
 
 def test_gap_option_preserves_order(fakes: Fakes, tmp_path: Path) -> None:
     env, play_log = engine_log_env(tmp_path)
-    r, _ = run_doc(
+    result, _ = run_doc(
         fakes, tmp_path, DOC, "--gap", "150", "--player", "test", env_extra=env
     )
-    assert r.returncode == 0, r.stderr
-    assert texts_played(fakes.say_log, play_log) == PARAS
+    assert result.returncode == 0, result.stderr
+    assert texts_played(fakes.say_log, play_log) == PARAGRAPHS
 
 
 def test_width_flag(fakes: Fakes, tmp_path: Path) -> None:
-    r, _ = run_doc(
+    result, _ = run_doc(
         fakes,
         tmp_path,
         "one two three four five six seven eight nine ten",
@@ -194,12 +196,14 @@ def test_width_flag(fakes: Fakes, tmp_path: Path) -> None:
         "--player",
         "test",
     )
-    assert r.returncode == 0
+    assert result.returncode == 0
     out_lines = [
-        ln for ln in r.stdout.splitlines() if ln and "¶" not in ln and "done" not in ln
+        line
+        for line in result.stdout.splitlines()
+        if line and "¶" not in line and "done" not in line
     ]
     assert out_lines
-    assert all(len(ln) <= 20 for ln in out_lines)
+    assert all(len(line) <= 20 for line in out_lines)
 
 
 def test_long_paragraph_display(fakes: Fakes, tmp_path: Path) -> None:
@@ -208,13 +212,15 @@ def test_long_paragraph_display(fakes: Fakes, tmp_path: Path) -> None:
         "while the sleepy farmer counts his sheep twice before dawn "
         "breaks over the eastern ridge and the rooster crows."
     )
-    r, _ = run_doc(fakes, tmp_path, text, "--player", "test")
-    assert r.returncode == 0, r.stderr
+    result, _ = run_doc(fakes, tmp_path, text, "--player", "test")
+    assert result.returncode == 0, result.stderr
     display = [
-        ln for ln in r.stdout.splitlines() if ln and "¶" not in ln and "done" not in ln
+        line
+        for line in result.stdout.splitlines()
+        if line and "¶" not in line and "done" not in line
     ]
     assert display
-    assert all(len(ln) <= 72 for ln in display)
+    assert all(len(line) <= 72 for line in display)
     assert " ".join(display) == text
 
 
@@ -225,7 +231,7 @@ def test_split_long_flag(fakes: Fakes, tmp_path: Path) -> None:
         "Sixteen seventeen eighteen nineteen twenty."
     )
     env, play_log = engine_log_env(tmp_path)
-    r, _ = run_doc(
+    result, _ = run_doc(
         fakes,
         tmp_path,
         para + "\n\nTail paragraph.",
@@ -235,7 +241,7 @@ def test_split_long_flag(fakes: Fakes, tmp_path: Path) -> None:
         "test",
         env_extra=env,
     )
-    assert r.returncode == 0, r.stderr
-    assert "¶ 1/4" in r.stdout
-    assert "¶ 4/4" in r.stdout
+    assert result.returncode == 0, result.stderr
+    assert "¶ 1/4" in result.stdout
+    assert "¶ 4/4" in result.stdout
     assert len(texts_played(fakes.say_log, play_log)) == 4

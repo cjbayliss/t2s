@@ -79,12 +79,12 @@ def run_t2s(
     env = os.environ.copy()
     if env_extra:
         env.update(env_extra)
-    r = subprocess.run(
+    result = subprocess.run(
         cmd, input=input, capture_output=True, env=env, timeout=timeout, cwd=REPO
     )
     return subprocess.CompletedProcess(
-        r.args,
-        r.returncode,
-        r.stdout.decode("utf-8", "replace"),
-        r.stderr.decode("utf-8", "replace"),
+        result.args,
+        result.returncode,
+        result.stdout.decode("utf-8", "replace"),
+        result.stderr.decode("utf-8", "replace"),
     )

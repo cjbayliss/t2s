@@ -4,32 +4,32 @@ import wave
 
 
 def main() -> int:
-    data = sys.stdin.read()
-    fail = os.environ.get("FAKE_SAY_FAIL_TEXT")
-    if fail and fail in data:
+    text = sys.stdin.read()
+    fail_text = os.environ.get("FAKE_SAY_FAIL_TEXT")
+    if fail_text and fail_text in text:
         sys.stderr.write("fake synthesis error: voice pack missing\n")
         return 1
 
-    out = None
+    output_path = None
     args = sys.argv[1:]
     for i, arg in enumerate(args):
         if arg == "-o" and i + 1 < len(args):
-            out = args[i + 1]
-    if out is None:
+            output_path = args[i + 1]
+    if output_path is None:
         sys.stderr.write("fake say: no -o argument\n")
         return 2
 
-    log = os.environ.get("FAKE_SAY_LOG")
-    if log:
-        key_path = out[:-5] if out.endswith(".part") else out
-        with open(log, "a") as f:
-            f.write(f"{key_path}\t{' '.join(data.split())[:60]}\n")
+    log_path = os.environ.get("FAKE_SAY_LOG")
+    if log_path:
+        logged_path = output_path[:-5] if output_path.endswith(".part") else output_path
+        with open(log_path, "a") as log_file:
+            log_file.write(f"{logged_path}\t{' '.join(text.split())[:60]}\n")
 
-    with wave.open(out, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(8000)
-        w.writeframes(b"\x00\x00" * 800)
+    with wave.open(output_path, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8000)
+        wav.writeframes(b"\x00\x00" * 800)
     return 0
 
 
