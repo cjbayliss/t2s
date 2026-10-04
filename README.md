@@ -21,8 +21,11 @@ Driving `say` directly has four papercuts:
 ## How it works
 
 Each paragraph is synthesized offline to a small WAV file in a cache
-directory (`say -o …`, pinned to 22 kHz 16-bit), a few paragraphs ahead of
-playback (`--ahead`, default 3).
+directory (`say -o …`), a few paragraphs ahead of playback (`--ahead`,
+default 3). The synthesis format defaults to **16-bit at the output
+device's native sample rate** (probed via CoreAudio), so playback needs no
+resampling anywhere and sounds like `say` played directly. Override it with
+`--data-format LEI16@44100` if you prefer (caches are keyed per format).
 
 Playback is **in-process**: the default engine decodes the cached files
 into memory and streams them through a single long-lived miniaudio device.
@@ -87,6 +90,8 @@ file                  text file to read ('-' or omitted: standard input)
                       raise for slow "premium" voices)
 --gap MS              silence between paragraphs in milliseconds
                       (default: 0 — seamless chaining)
+--data-format FMT     synthesis format for say, e.g. LEI16@44100
+                      (default: 16-bit at the output device's native rate)
 --cache-dir PATH      audio cache directory (default: ~/Library/Caches/t2s)
 --cache-limit-mb MB   prune cache when larger than this (default 256)
 --player ENGINE       auto (default) | miniaudio | afplay | test

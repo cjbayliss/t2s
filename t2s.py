@@ -54,7 +54,7 @@ except ImportError:  # pragma: no cover - environment dependent
     miniaudio = None
     HAVE_MINIAUDIO = False
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # --------------------------------------------------------------------------- #
 # Terminal escapes / stream format                                            #
@@ -64,11 +64,65 @@ DIM = "\x1b[2m"
 RESET = "\x1b[0m"
 SHOW_CURSOR = "\x1b[0m\x1b[?25h"
 
-# Synthesis is pinned to one format so every cached file matches the single
-# audio device opened for the whole session.
-SAMPLE_RATE = 22050
+# Synthesis is pinned to one format per session so every cached file matches
+# the single audio device opened for the whole session.  The default rate is
+# the output device's native rate: resampling is then nobody's job.  (The
+# 0.2/0.3 pin to 22050 made the HAL resample on every modern Mac, which was
+# audible as a dull, slightly gritty rendition.)
+SAMPLE_RATE = 22050  # default for tests / hermetic gap math
 CHANNELS = 1
-FORMAT_NAME = "LEI16@22050"
+FORMAT_NAME = "LEI16@22050"  # legacy default; runtime default is detected
+
+_OUTPUT_RATE: int | None = None
+
+
+def detect_output_rate() -> int:
+    """Nominal sample rate of the default output device, via CoreAudio.
+
+    Cheap (one property query) and silent.  Falls back to 48000 — the
+    default on modern Macs — if the probe fails for any reason.
+    """
+    global _OUTPUT_RATE
+    if _OUTPUT_RATE is not None:
+        return _OUTPUT_RATE
+    rate = 0
+    try:
+        import ctypes
+
+        class _PropAddr(ctypes.Structure):
+            _fields_ = [("sel", ctypes.c_uint32),
+                        ("scope", ctypes.c_uint32),
+                        ("elem", ctypes.c_uint32)]
+
+        ca = ctypes.CDLL(
+            "/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
+        ca.AudioObjectGetPropertyData.restype = ctypes.c_int32
+        ca.AudioObjectGetPropertyData.argtypes = [
+            ctypes.c_uint32, ctypes.POINTER(_PropAddr), ctypes.c_uint32,
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+        out = 0x6F7574  # 'out' scope
+
+        def _get(obj: int, sel: int, size: int, ctype) -> int:
+            addr = _PropAddr(sel, out, 0)
+            n = ctypes.c_uint32(size)
+            v = ctype()
+            st = ca.AudioObjectGetPropertyData(obj, ctypes.byref(addr), 0,
+                                               None, ctypes.byref(n),
+                                               ctypes.byref(v))
+            return int(v.value) if st == 0 else 0
+
+        dev = _get(1, 0x644F7574, 4, ctypes.c_uint32)  # 'dOut' default device
+        if dev:
+            rate = _get(dev, 0x6E737274, 8, ctypes.c_double)  # 'nsrt'
+    except Exception:
+        rate = 0
+    _OUTPUT_RATE = rate if 8000 <= rate <= 384000 else 48000
+    return _OUTPUT_RATE
+
+
+def default_data_format() -> str:
+    """Synthesis format matching the output device: e.g. "LEI16@48000"."""
+    return f"LEI16@{detect_output_rate()}"
 
 # --------------------------------------------------------------------------- #
 # Paragraph splitting                                                         #
@@ -167,7 +221,8 @@ class SynthesisError(Exception):
         self.detail = detail
 
 
-def cache_key(text: str, voice: str | None, rate: int | None) -> str:
+def cache_key(text: str, voice: str | None, rate: int | None,
+              data_format: str = FORMAT_NAME) -> str:
     """Stable cache filename stem for a paragraph under voice/rate/format."""
     material = f"{voice or ''}|{rate or ''}|{FORMAT_NAME}|{text}"
     return hashlib.sha1(material.encode("utf-8")).hexdigest()
@@ -338,8 +393,10 @@ class ChainEngine:
     def __init__(self, chunk_bytes: int = 1102, gap_ms: int = 0) -> None:
         # ~25 ms chunks @ 22 kHz mono s16
         self._chunk_bytes = chunk_bytes
-        gap_frames = int(round(gap_ms * SAMPLE_RATE / 1000))
-        self._gap_bytes = gap_frames * CHANNELS * 2
+        self._rate = SAMPLE_RATE
+        self._channels = CHANNELS
+        self._gap_ms = gap_ms
+        self._recompute_gap()
         self._lock = threading.Lock()
         self.events: queue.SimpleQueue = queue.SimpleQueue()
         self._paths: dict[int, Path] = {}
@@ -432,13 +489,23 @@ class ChainEngine:
         """
         frames = yield b""
         while not self._closed:
-            want = max(int(frames or 0), 1) * CHANNELS * 2
+            want = max(int(frames or 0), 1) * self._channels * 2
             chunk = self._next_chunk(want)
             if chunk is None:
                 chunk = bytes(want)
             elif len(chunk) < want:
                 chunk += bytes(want - len(chunk))
             frames = yield chunk
+
+    def _recompute_gap(self) -> None:
+        gap_frames = int(round(self._gap_ms * self._rate / 1000))
+        self._gap_bytes = gap_frames * self._channels * 2
+
+    def set_stream_format(self, rate: int, channels: int) -> None:
+        """Align byte math with the actual stream (before device open)."""
+        self._rate = rate
+        self._channels = channels
+        self._recompute_gap()
 
     def _next_chunk(self, want: int) -> bytes | None:
         """Return exactly `want` bytes of the stream, or None when idle.
@@ -461,8 +528,9 @@ class ChainEngine:
                 if self._cur is None:
                     break
                 if self._pos >= len(self._data):
-                    self.events.put(("finished", self._cur))
                     nxt = self._chained
+                    chained = nxt is not None and nxt in self._sources
+                    self.events.put(("finished", self._cur, chained))
                     self._chained = None
                     if nxt is None or nxt not in self._sources:
                         self._cur = None
@@ -516,16 +584,21 @@ class MiniaudioEngine(ChainEngine):
         return decoded.samples.tobytes()
 
     def play(self, idx: int, path: Path) -> None:
-        self._ensure_device()
+        self._ensure_device(path)
         super().play(idx, path)
 
-    def _ensure_device(self) -> None:
+    def _ensure_device(self, path: Path) -> None:
         if self._device is not None:
             return
+        # Open the device with the cached files' actual rate/channels: the
+        # device then runs natively and no resampling happens anywhere.
+        with wave.open(str(path), "rb") as w:
+            rate, channels = w.getframerate(), w.getnchannels()
+        self.set_stream_format(rate, channels)
         self._device = miniaudio.PlaybackDevice(
             output_format=miniaudio.SampleFormat.SIGNED16,
-            nchannels=CHANNELS,
-            sample_rate=SAMPLE_RATE,
+            nchannels=channels,
+            sample_rate=rate,
             buffersize_msec=60,  # snappier pause than the 200 ms default
         )
         pull = self._pull_frames()
@@ -610,7 +683,7 @@ class SubprocessEngine:
         if self._reported:
             return  # user-initiated stop (or superseded by a newer play)
         if rc == 0:
-            self.events.put(("finished", idx))
+            self.events.put(("finished", idx, False))
         else:
             stderr = proc.stderr.read() if proc.stderr is not None else b""
             tail = " ".join(stderr.decode("utf-8", "replace").split())[:200]
@@ -677,7 +750,7 @@ class App:
                  say_bin: str | None = None, play_bin: str | None = None,
                  cache_dir: str | None = None, cache_limit_mb: float = 256.0,
                  ahead: int = 3, player: str = "auto",
-                 gap_ms: int = 0) -> None:
+                 gap_ms: int = 0, data_format: str | None = None) -> None:
         self.paras = paras
         self.idx = start_idx
         self.width = width
@@ -691,9 +764,9 @@ class App:
             say_cmd += ["-v", voice]
         if rate:
             say_cmd += ["-r", str(rate)]
-        say_cmd += ["--file-format", "WAVE",
-                    "--data-format", FORMAT_NAME]
-        keys = [cache_key(p, voice, rate) for p in paras]
+        fmt = data_format or default_data_format()
+        say_cmd += ["--file-format", "WAVE", "--data-format", fmt]
+        keys = [cache_key(p, voice, rate, fmt) for p in paras]
         self.cache_dir = Path(cache_dir) if cache_dir else (
             Path.home() / "Library" / "Caches" / "t2s")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -876,12 +949,15 @@ class App:
                     self._advance(after_error=True)
                     return
             elif kind == "finished":
-                idx = ev[1]
+                idx, chained = ev[1], ev[2]
                 if self.state != "playing":
                     continue
                 self.idx = idx
-                if self.engine.current_index() is not None:
-                    continue  # chained into the next one; its event follows
+                # `chained` is decided atomically at the stream boundary by
+                # the engine, so event pile-ups (several short paragraphs
+                # ending inside one tick) can never cause a replay.
+                if chained:
+                    continue  # the "chained" event syncs us forward
                 if idx + 1 < len(self.paras):
                     if self.play(idx + 1) == "failed":
                         self._advance(after_error=True)
@@ -983,6 +1059,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--gap", type=int, default=0, metavar="MS",
                    help="silence between paragraphs in milliseconds "
                         "(default: 0)")
+    p.add_argument("--data-format", default=None, metavar="FMT",
+                   help="synthesis format for say, e.g. LEI16@48000 "
+                        "(default: LEI16 at the output device's native rate)")
     p.add_argument("--player", default="auto",
                    choices=["auto", "miniaudio", "afplay", "test"],
                    help="playback engine: miniaudio (gapless in-process "
@@ -1022,7 +1101,8 @@ def main(argv: list[str] | None = None) -> int:
               voice=args.voice, rate=args.rate,
               say_bin=args.say_bin, play_bin=args.play_bin,
               cache_dir=args.cache_dir, cache_limit_mb=args.cache_limit_mb,
-              ahead=args.ahead, player=args.player, gap_ms=args.gap)
+              ahead=args.ahead, player=args.player, gap_ms=args.gap,
+              data_format=args.data_format)
     try:
         return app.run()
     except BrokenPipeError:
