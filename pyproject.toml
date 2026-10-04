@@ -7,7 +7,7 @@ name = "t2s"
 version = "0.5.0"
 description = "Read documents aloud with macOS say(1), paragraph by paragraph - gapless in-process playback, pausable, 72-column display, resilient to audio device changes."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 dependencies = ["miniaudio>=1.61"]
 
 [project.scripts]
@@ -45,7 +45,7 @@ select = [
 ]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.14"
 strict = true
 files = ["t2s", "tests"]
 

@@ -300,7 +300,7 @@ def poll_keys(app: App, state: AppState) -> AppState:
     fds: list[int] = [key_source.fd] if key_source is not None else []
     try:
         ready, _, _ = select.select(fds, [], [], 0.05)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         ready = []
     if key_source is not None and key_source.fd in ready:
         try:
