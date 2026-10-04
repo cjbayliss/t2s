@@ -1,4 +1,5 @@
 """Shared fixtures for the t2s test suite."""
+
 import os
 import subprocess
 import sys
@@ -13,7 +14,7 @@ FAKE_SAY_SRC = Path(__file__).resolve().parent / "fake_say.py"
 FAKE_PLAY_SRC = Path(__file__).resolve().parent / "fake_play.py"
 
 
-@dataclass
+@dataclass(frozen=True)
 class Fakes:
     say_bin: str
     play_bin: str
@@ -34,12 +35,12 @@ def texts_played(say_log: Path, play_log: Path) -> list[str]:
             mapping[path] = text
     if not play_log.exists():
         return []
-    return [mapping.get(p, p)
-            for p in play_log.read_text().splitlines() if p.strip()]
+    return [mapping.get(p, p) for p in play_log.read_text().splitlines() if p.strip()]
 
 
-def engine_log_env(tmp_path: Path, delay: str = "0.05",
-                   fail_at: str | None = None) -> tuple[dict[str, str], Path]:
+def engine_log_env(
+    tmp_path: Path, delay: str = "0.05", fail_at: str | None = None
+) -> tuple[dict[str, str], Path]:
     """Env for --player test plus the path its play log will appear at."""
     log = tmp_path / "engine-play.log"
     env = {"T2S_TEST_PLAY_LOG": str(log), "T2S_TEST_PLAY_DELAY": delay}
@@ -47,18 +48,8 @@ def engine_log_env(tmp_path: Path, delay: str = "0.05",
         env["T2S_TEST_PLAY_FAIL_AT"] = fail_at
     return env, log
 
-    def play_count(self, path: str | None = None) -> int:
-        if not self.play_log.exists():
-            return 0
-        lines = [ln for ln in self.play_log.read_text().splitlines()
-                 if ln.strip()]
-        if path is None:
-            return len(lines)
-        return sum(1 for ln in lines if ln == path)
 
-
-def _wrapper(tmp_path: Path, name: str, src: Path,
-             env: dict[str, Path]) -> str:
+def _wrapper(tmp_path: Path, name: str, src: Path, env: dict[str, Path]) -> str:
     script = tmp_path / name
     lines = ["#!/bin/sh"]
     for key, value in env.items():
@@ -77,18 +68,18 @@ def fakes(tmp_path: Path) -> Fakes:
         pytest.skip("fake binaries require a POSIX shell")
     play_log = tmp_path / "play.log"
     say_log = tmp_path / "say.log"
-    say = _wrapper(tmp_path, "fake_say", FAKE_SAY_SRC,
-                   {"FAKE_SAY_LOG": say_log})
-    play = _wrapper(tmp_path, "fake_play", FAKE_PLAY_SRC,
-                    {"FAKE_PLAY_LOG": play_log})
-    return Fakes(say_bin=say, play_bin=play, play_log=play_log,
-                 say_log=say_log)
+    say = _wrapper(tmp_path, "fake_say", FAKE_SAY_SRC, {"FAKE_SAY_LOG": say_log})
+    play = _wrapper(tmp_path, "fake_play", FAKE_PLAY_SRC, {"FAKE_PLAY_LOG": play_log})
+    return Fakes(say_bin=say, play_bin=play, play_log=play_log, say_log=say_log)
 
 
-def run_t2s(args: list[str], fakes: Fakes | None = None,
-            env_extra: dict[str, str] | None = None,
-            input: bytes | None = None,
-            timeout: float = 30.0) -> subprocess.CompletedProcess:
+def run_t2s(
+    args: list[str],
+    fakes: Fakes | None = None,
+    env_extra: dict[str, str] | None = None,
+    input: bytes | None = None,
+    timeout: float = 30.0,
+) -> subprocess.CompletedProcess[str]:
     """Run t2s as a subprocess.
 
     Binary capture + manual decode: text mode would apply universal-newline
@@ -102,8 +93,10 @@ def run_t2s(args: list[str], fakes: Fakes | None = None,
     env = os.environ.copy()
     if env_extra:
         env.update(env_extra)
-    r = subprocess.run(cmd, input=input, capture_output=True, env=env,
-                       timeout=timeout)
-    r.stdout = r.stdout.decode("utf-8", "replace")
-    r.stderr = r.stderr.decode("utf-8", "replace")
-    return r
+    r = subprocess.run(cmd, input=input, capture_output=True, env=env, timeout=timeout)
+    return subprocess.CompletedProcess(
+        r.args,
+        r.returncode,
+        r.stdout.decode("utf-8", "replace"),
+        r.stderr.decode("utf-8", "replace"),
+    )

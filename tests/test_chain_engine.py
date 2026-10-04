@@ -4,14 +4,15 @@ Uses a trivial subclass of ChainEngine whose "files" are plain byte files,
 and consumes the pull generator directly so chunk boundaries and events
 can be asserted exactly.
 """
+
 import queue
 import wave
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from t2s import MiniaudioEngine, ChainEngine
-from t2s import HAVE_MINIAUDIO
+from t2s import HAVE_MINIAUDIO, ChainEngine, MiniaudioEngine, StreamState, stream_play
 
 
 class RawEngine(ChainEngine):
@@ -19,6 +20,14 @@ class RawEngine(ChainEngine):
 
     def _load(self, path: Path) -> bytes:
         return path.read_bytes()
+
+
+def test_stream_transitions_are_pure() -> None:
+    """stream_play derives a new state; the state it was given is untouched."""
+    s = StreamState()
+    t = stream_play(s, 0, Path("a.raw"), b"\x01\x02")
+    assert s == StreamState()  # input value unchanged
+    assert t.cur == 0 and t.data == b"\x01\x02" and t.pos == 0
 
 
 def make_wav(tmp_path: Path, name: str, payload: bytes) -> Path:
@@ -33,16 +42,17 @@ def drain(engine: RawEngine, n: int) -> list[bytes]:
     return [next(gen) for _ in range(n)]
 
 
-def events(engine: RawEngine) -> list[tuple]:
+def events(engine: RawEngine) -> list[tuple[Any, ...]]:
     out = []
     while True:
+        # PERF203: the queue API is exception-based.
         try:
             out.append(engine.events.get_nowait())
-        except queue.Empty:
+        except queue.Empty:  # noqa: PERF203
             return out
 
 
-def test_zero_gap_chain(tmp_path: Path):
+def test_zero_gap_chain(tmp_path: Path) -> None:
     first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 3)
     second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
     engine = RawEngine(chunk_bytes=2)
@@ -57,7 +67,7 @@ def test_zero_gap_chain(tmp_path: Path):
     assert engine.current_index() == 1
 
 
-def test_unchained_end_goes_silent(tmp_path: Path):
+def test_unchained_end_goes_silent(tmp_path: Path) -> None:
     only = make_wav(tmp_path, "a.raw", b"\x01\x02" * 2)
     engine = RawEngine(chunk_bytes=2)
     engine.play(0, only)
@@ -70,7 +80,7 @@ def test_unchained_end_goes_silent(tmp_path: Path):
     assert engine.current_index() is None
 
 
-def test_stop_stream_and_replay(tmp_path: Path):
+def test_stop_stream_and_replay(tmp_path: Path) -> None:
     data = make_wav(tmp_path, "a.raw", b"\x01\x02" * 4)
     engine = RawEngine(chunk_bytes=2)
     engine.play(0, data)
@@ -85,7 +95,7 @@ def test_stop_stream_and_replay(tmp_path: Path):
     assert first == [b"\x01\x02"]
 
 
-def test_fail_idx_simulates_device_error(tmp_path: Path):
+def test_fail_idx_simulates_device_error(tmp_path: Path) -> None:
     data = make_wav(tmp_path, "a.raw", b"\x01\x02" * 2)
 
     class Flaky(RawEngine):
@@ -96,12 +106,11 @@ def test_fail_idx_simulates_device_error(tmp_path: Path):
     engine.play(0, data)
     chunks = drain(engine, 2)
     assert chunks == [b"\x00\x00", b"\x00\x00"]  # never started
-    assert engine.events.get_nowait() == ("crashed", 0,
-                                          "simulated device error")
+    assert engine.events.get_nowait() == ("crashed", 0, "simulated device error")
     assert engine.current_index() is None
 
 
-def test_prime_without_chain_is_ignored(tmp_path: Path):
+def test_prime_without_chain_is_ignored(tmp_path: Path) -> None:
     a = make_wav(tmp_path, "a.raw", b"\x01\x02")
     c = make_wav(tmp_path, "c.raw", b"\x05\x06")
     engine = RawEngine(chunk_bytes=2)
@@ -113,7 +122,7 @@ def test_prime_without_chain_is_ignored(tmp_path: Path):
     assert "finished" in kinds
 
 
-def test_set_stream_format_updates_gap(tmp_path: Path):
+def test_set_stream_format_updates_gap(tmp_path: Path) -> None:
     """The gap must be recomputed when the engine learns the real format."""
     first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 2)
     second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
@@ -129,32 +138,34 @@ def test_set_stream_format_updates_gap(tmp_path: Path):
 
     body = (b"\x01\x02" * 2) + bytes(gap) + (b"\x03\x04" * 2)
     assert joined.startswith(body)
-    assert joined[len(body):].strip(b"\x00") == b""
+    assert joined[len(body) :].strip(b"\x00") == b""
 
 
-def test_detect_output_rate():
+def test_detect_output_rate() -> None:
     from t2s import detect_output_rate
+
     rate = detect_output_rate()
     assert isinstance(rate, int) and 8000 <= rate <= 384000
     assert detect_output_rate() == rate  # stable within a process
 
 
-def test_default_data_format_matches_device():
+def test_default_data_format_matches_device() -> None:
     from t2s import default_data_format, detect_output_rate
+
     assert default_data_format() == f"LEI16@{detect_output_rate()}"
 
 
-def test_prime_missing_file_is_best_effort(tmp_path: Path):
+def test_prime_missing_file_is_best_effort(tmp_path: Path) -> None:
     engine = RawEngine(chunk_bytes=2)
     engine.prime(0, tmp_path / "does-not-exist.raw")  # must not raise
     assert engine.current_index() is None
 
 
-def test_gap_inserts_silence_between_paragraphs(tmp_path: Path):
+def test_gap_inserts_silence_between_paragraphs(tmp_path: Path) -> None:
     """--gap: exact silence between chained paragraphs, none elsewhere."""
     from t2s import SAMPLE_RATE
 
-    first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 3)   # 3 frames
+    first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 3)  # 3 frames
     second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)  # 2 frames
     engine = RawEngine(chunk_bytes=2, gap_ms=2)  # -> round(44.1)=44 frames
     gap_bytes = round(2 * SAMPLE_RATE / 1000) * 2
@@ -169,12 +180,12 @@ def test_gap_inserts_silence_between_paragraphs(tmp_path: Path):
     body = (b"\x01\x02" * 3) + bytes(gap_bytes) + (b"\x03\x04" * 2)
     assert joined.startswith(body)
     # everything after ¶2 is idle silence too
-    assert joined[len(body):].strip(b"\x00") == b""
+    assert joined[len(body) :].strip(b"\x00") == b""
     kinds = [e[0] for e in events(engine)]
     assert kinds == ["finished", "chained", "finished"]
 
 
-def test_zero_gap_is_the_default(tmp_path: Path):
+def test_zero_gap_is_the_default(tmp_path: Path) -> None:
     first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 3)
     second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
     engine = RawEngine(chunk_bytes=2)  # gap_ms defaults to 0
@@ -185,7 +196,7 @@ def test_zero_gap_is_the_default(tmp_path: Path):
     assert b"".join(chunks) == (b"\x01\x02" * 3) + (b"\x03\x04" * 2)
 
 
-def test_explicit_play_has_no_leading_gap(tmp_path: Path):
+def test_explicit_play_has_no_leading_gap(tmp_path: Path) -> None:
     data = make_wav(tmp_path, "a.raw", b"\x01\x02" * 4)
     engine = RawEngine(chunk_bytes=2, gap_ms=500)
     engine.play(0, data)
@@ -193,7 +204,7 @@ def test_explicit_play_has_no_leading_gap(tmp_path: Path):
     assert chunks == [b"\x01\x02", b"\x01\x02"]  # starts immediately
 
 
-def test_gap_across_request_boundaries(tmp_path: Path):
+def test_gap_across_request_boundaries(tmp_path: Path) -> None:
     """A gap larger than one device request must still be exact."""
     from t2s import SAMPLE_RATE
 
@@ -210,29 +221,29 @@ def test_gap_across_request_boundaries(tmp_path: Path):
     got = gen.send(230)  # 230 frames = 460 bytes
     expected = (b"\x01\x02" * 2) + bytes(gap_bytes) + (b"\x03\x04" * 2)
     assert got.startswith(expected)
-    assert got[len(expected):].strip(b"\x00") == b""
+    assert got[len(expected) :].strip(b"\x00") == b""
 
 
-def test_pull_frames_protocol(tmp_path: Path):
+def test_pull_frames_protocol(tmp_path: Path) -> None:
     """The device sends a frame count and must get EXACTLY that many
     frames back — even when a request spans a paragraph boundary, and
     padded with silence once idle."""
-    first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 3)   # 3 frames
+    first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 3)  # 3 frames
     second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)  # 2 frames
     engine = RawEngine(chunk_bytes=2)
     engine.play(0, first)
     engine.prime(1, second)
 
     gen = engine._pull_frames()
-    assert next(gen) == b""                              # prime
-    assert gen.send(2) == b"\x01\x02\x01\x02"            # ¶1 frames 0-1
-    assert gen.send(3) == b"\x01\x02\x03\x04\x03\x04"    # ¶1 frame 2 + ¶2
-    assert gen.send(2) == b"\x00\x00\x00\x00"            # idle: silence
+    assert next(gen) == b""  # prime
+    assert gen.send(2) == b"\x01\x02\x01\x02"  # ¶1 frames 0-1
+    assert gen.send(3) == b"\x01\x02\x03\x04\x03\x04"  # ¶1 frame 2 + ¶2
+    assert gen.send(2) == b"\x00\x00\x00\x00"  # idle: silence
     kinds = [e[0] for e in events(engine)]
     assert kinds == ["finished", "chained", "finished"]
 
 
-def test_pull_frames_single_request_spans_both(tmp_path: Path):
+def test_pull_frames_single_request_spans_both(tmp_path: Path) -> None:
     first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 3)
     second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
     engine = RawEngine(chunk_bytes=2)
@@ -248,7 +259,7 @@ def test_pull_frames_single_request_spans_both(tmp_path: Path):
     assert kinds == ["finished", "chained", "finished"]
 
 
-def test_miniaudio_real_device(tmp_path: Path):
+def test_miniaudio_real_device(tmp_path: Path) -> None:
     """Play 0.2 s of real audio through the actual output device."""
     if not HAVE_MINIAUDIO:
         pytest.skip("miniaudio not installed")
@@ -270,7 +281,7 @@ def test_miniaudio_real_device(tmp_path: Path):
     assert engine.current_index() is None  # finished streaming
 
 
-def test_device_format_follows_file_header(tmp_path: Path):
+def test_device_format_follows_file_header(tmp_path: Path) -> None:
     """Regression for the quality bug: the device must open at the cached
     files' rate (no HAL resampling), not a hardcoded constant."""
     if not HAVE_MINIAUDIO:
@@ -290,7 +301,7 @@ def test_device_format_follows_file_header(tmp_path: Path):
     assert rate == 48000
 
 
-def test_miniaudio_plays_in_real_time(tmp_path: Path):
+def test_miniaudio_plays_in_real_time(tmp_path: Path) -> None:
     """Regression: the engine must answer the device's frame requests
     exactly.  A short answer stretches playback (it once played ~8x slow),
     so a 2 s stream must drain in roughly 2 s of wall time."""

@@ -9,6 +9,7 @@ stdin.  Environment variables:
     FAKE_SAY_LOG        append "OUT<TAB>text-prefix" per render so tests can
                         map cache files back to paragraph text
 """
+
 import os
 import sys
 import wave

@@ -29,9 +29,11 @@ Keys (when run from a terminal):
     n / p   next / previous paragraph
     q       quit (Ctrl-C works too)
 """
+
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import os
 import queue
@@ -44,11 +46,17 @@ import threading
 import time
 import tty
 import wave
-from collections.abc import Iterator
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from functools import reduce
+from itertools import accumulate, chain
+from operator import attrgetter
 from pathlib import Path
+from typing import Any, Literal, cast
 
 try:
     import miniaudio
+
     HAVE_MINIAUDIO = True
 except ImportError:  # pragma: no cover - environment dependent
     miniaudio = None
@@ -73,7 +81,56 @@ SAMPLE_RATE = 22050  # default for tests / hermetic gap math
 CHANNELS = 1
 FORMAT_NAME = "LEI16@22050"  # legacy default; runtime default is detected
 
-_OUTPUT_RATE: int | None = None
+
+def nominal_output_rate(raw: int) -> int:
+    """Validate a probed device rate; 48000 (modern-Mac default) on doubt."""
+    return raw if 8000 <= raw <= 384000 else 48000
+
+
+def probe_output_rate() -> int:
+    """Raw CoreAudio query of the default output device's rate; 0 on failure."""
+    try:
+        import ctypes
+
+        class _PropAddr(ctypes.Structure):
+            _fields_ = [
+                ("sel", ctypes.c_uint32),
+                ("scope", ctypes.c_uint32),
+                ("elem", ctypes.c_uint32),
+            ]
+
+        ca = ctypes.CDLL("/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
+        ca.AudioObjectGetPropertyData.restype = ctypes.c_int32
+        ca.AudioObjectGetPropertyData.argtypes = [
+            ctypes.c_uint32,
+            ctypes.POINTER(_PropAddr),
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.c_void_p,
+        ]
+        out = 0x6F7574  # 'out' scope
+
+        def _get(
+            obj: int,
+            sel: int,
+            size: int,
+            ctype: type[ctypes.c_uint32] | type[ctypes.c_double],
+        ) -> int:
+            addr = _PropAddr(sel, out, 0)
+            n = ctypes.c_uint32(size)
+            v = ctype()
+            st = ca.AudioObjectGetPropertyData(
+                obj, ctypes.byref(addr), 0, None, ctypes.byref(n), ctypes.byref(v)
+            )
+            return int(v.value) if st == 0 else 0
+
+        dev = _get(1, 0x644F7574, 4, ctypes.c_uint32)  # 'dOut' default device
+        if dev:
+            return _get(dev, 0x6E737274, 8, ctypes.c_double)  # 'nsrt'
+        return 0
+    except Exception:
+        return 0
 
 
 def detect_output_rate() -> int:
@@ -82,47 +139,13 @@ def detect_output_rate() -> int:
     Cheap (one property query) and silent.  Falls back to 48000 — the
     default on modern Macs — if the probe fails for any reason.
     """
-    global _OUTPUT_RATE
-    if _OUTPUT_RATE is not None:
-        return _OUTPUT_RATE
-    rate = 0
-    try:
-        import ctypes
-
-        class _PropAddr(ctypes.Structure):
-            _fields_ = [("sel", ctypes.c_uint32),
-                        ("scope", ctypes.c_uint32),
-                        ("elem", ctypes.c_uint32)]
-
-        ca = ctypes.CDLL(
-            "/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
-        ca.AudioObjectGetPropertyData.restype = ctypes.c_int32
-        ca.AudioObjectGetPropertyData.argtypes = [
-            ctypes.c_uint32, ctypes.POINTER(_PropAddr), ctypes.c_uint32,
-            ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
-        out = 0x6F7574  # 'out' scope
-
-        def _get(obj: int, sel: int, size: int, ctype) -> int:
-            addr = _PropAddr(sel, out, 0)
-            n = ctypes.c_uint32(size)
-            v = ctype()
-            st = ca.AudioObjectGetPropertyData(obj, ctypes.byref(addr), 0,
-                                               None, ctypes.byref(n),
-                                               ctypes.byref(v))
-            return int(v.value) if st == 0 else 0
-
-        dev = _get(1, 0x644F7574, 4, ctypes.c_uint32)  # 'dOut' default device
-        if dev:
-            rate = _get(dev, 0x6E737274, 8, ctypes.c_double)  # 'nsrt'
-    except Exception:
-        rate = 0
-    _OUTPUT_RATE = rate if 8000 <= rate <= 384000 else 48000
-    return _OUTPUT_RATE
+    return nominal_output_rate(probe_output_rate())
 
 
 def default_data_format() -> str:
     """Synthesis format matching the output device: e.g. "LEI16@48000"."""
     return f"LEI16@{detect_output_rate()}"
+
 
 # --------------------------------------------------------------------------- #
 # Paragraph splitting                                                         #
@@ -136,32 +159,31 @@ def normalize(text: str) -> str:
     return " ".join(text.split())
 
 
-def split_sentences(text: str) -> list[str]:
-    return [m.group(0).strip() for m in _SENTENCE_RE.finditer(text)
-            if m.group(0).strip()]
+def split_sentences(text: str) -> tuple[str, ...]:
+    return tuple(
+        m.group(0).strip() for m in _SENTENCE_RE.finditer(text) if m.group(0).strip()
+    )
 
 
-def pack_sentences(sentences: list[str], max_chars: int) -> list[str]:
+def pack_sentences(sentences: Sequence[str], max_chars: int) -> tuple[str, ...]:
     """Greedily pack sentences into chunks of at most max_chars characters."""
-    chunks: list[str] = []
-    cur = ""
-    for s in sentences:
-        if cur and len(cur) + 1 + len(s) > max_chars:
-            chunks.append(cur)
-            cur = s
-        else:
-            cur = f"{cur} {s}" if cur else s
-    if cur:
-        chunks.append(cur)
-    return chunks
+
+    def pack(chunks: tuple[str, ...], sentence: str) -> tuple[str, ...]:
+        if not chunks:
+            return (sentence,)
+        cur = chunks[-1]
+        if len(cur) + 1 + len(sentence) > max_chars:
+            return (*chunks, sentence)
+        return (*chunks[:-1], f"{cur} {sentence}")
+
+    return reduce(pack, sentences, ())
 
 
 def split_long_paragraph(text: str, max_chars: int) -> list[str]:
     """Break an over-long paragraph into chunks at sentence boundaries."""
     if max_chars <= 0:
         return [text]
-    chunks = pack_sentences(split_sentences(text), max_chars)
-    return chunks or [text]
+    return list(pack_sentences(split_sentences(text), max_chars)) or [text]
 
 
 def split_paragraphs(text: str, max_chars: int | None = None) -> list[str]:
@@ -173,44 +195,54 @@ def split_paragraphs(text: str, max_chars: int | None = None) -> list[str]:
     at sentence boundaries.
     """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    paras: list[str] = []
-    for chunk in re.split(r"\n[ \t]*\n+", text):
-        norm = normalize(chunk)
-        if not norm:
-            continue
-        if max_chars:
-            paras.extend(split_long_paragraph(norm, max_chars))
-        else:
-            paras.append(norm)
-    return paras
+    normalized = (normalize(chunk) for chunk in re.split(r"\n[ \t]*\n+", text))
+    expanded = (
+        split_long_paragraph(para, max_chars) if max_chars else (para,)
+        for para in normalized
+        if para
+    )
+    return list(chain.from_iterable(expanded))
 
 
 # --------------------------------------------------------------------------- #
 # Wrapping                                                                    #
 # --------------------------------------------------------------------------- #
 
+
+def _line_end(text: str, start: int, width: int) -> int:
+    """Index just past the wrapped line that begins at `start`."""
+    end = min(start + width, len(text))
+    if end < len(text):
+        sp = text.rfind(" ", start, end + 1)
+        if sp > start:
+            end = sp
+    return end
+
+
+def _next_line_start(text: str, end: int) -> int:
+    """Where the next line begins: one separating space is dropped."""
+    return end + 1 if end < len(text) and text[end] == " " else end
+
+
 def wrap_offsets(text: str, width: int) -> list[tuple[str, int]]:
     """Wrap text to width, keeping each line's offset in the original text."""
+
+    def lines() -> Iterator[tuple[str, int]]:
+        """Unfold (line, offset) pairs until the text is exhausted."""
+        start = 0
+        while start < len(text):
+            end = _line_end(text, start, width)
+            yield text[start:end], start
+            start = _next_line_start(text, end)
+
     width = max(1, width)
-    n = len(text)
-    lines: list[tuple[str, int]] = []
-    start = 0
-    while start < n:
-        end = min(start + width, n)
-        if end < n:
-            sp = text.rfind(" ", start, end + 1)
-            if sp > start:
-                end = sp
-        lines.append((text[start:end], start))
-        start = end + 1 if end < n and text[end] == " " else end
-    if not lines:
-        lines.append(("", 0))
-    return lines
+    return list(lines()) or [("", 0)]
 
 
 # --------------------------------------------------------------------------- #
 # Synthesis + cache                                                           #
 # --------------------------------------------------------------------------- #
+
 
 class SynthesisError(Exception):
     """Paragraph audio could not be rendered."""
@@ -221,11 +253,36 @@ class SynthesisError(Exception):
         self.detail = detail
 
 
-def cache_key(text: str, voice: str | None, rate: int | None,
-              data_format: str = FORMAT_NAME) -> str:
+def cache_key(
+    text: str, voice: str | None, rate: int | None, data_format: str = FORMAT_NAME
+) -> str:
     """Stable cache filename stem for a paragraph under voice/rate/format."""
-    material = f"{voice or ''}|{rate or ''}|{FORMAT_NAME}|{text}"
+    material = f"{voice or ''}|{rate or ''}|{data_format}|{text}"
     return hashlib.sha1(material.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class CacheFile:
+    """One cached WAV as pruning sees it: identity, weight, age."""
+
+    path: Path
+    size: int
+    mtime: float
+
+
+def evictions(files: Sequence[CacheFile], limit_bytes: float) -> tuple[Path, ...]:
+    """Oldest-first paths whose removal brings the total under limit_bytes.
+
+    Pure policy: no I/O, so the budget arithmetic is testable directly.
+    """
+    ordered = sorted(files, key=attrgetter("mtime"))
+    total = sum(f.size for f in ordered)
+    # Remaining total after evicting 0, 1, ... of the oldest files.
+    remaining = (
+        total - gone for gone in accumulate(chain((0,), (f.size for f in ordered)))
+    )
+    n = sum(1 for left in remaining if left > limit_bytes)
+    return tuple(f.path for f in ordered[:n])
 
 
 def prune_cache(cache_dir: Path, limit_mb: float) -> None:
@@ -240,18 +297,10 @@ def prune_cache(cache_dir: Path, limit_mb: float) -> None:
         part.unlink(missing_ok=True)  # interrupted renders
     if limit_mb <= 0:
         return
-    limit = limit_mb * 1024 * 1024
-    files = [p for p in cache_dir.glob("*.wav") if p.is_file()]
-    total = 0
-    stats: dict[Path, int] = {}
-    for p in files:
-        stats[p] = p.stat().st_size
-        total += stats[p]
-    for p in sorted(files, key=lambda x: x.stat().st_mtime):
-        if total <= limit:
-            break
-        total -= stats[p]
-        p.unlink(missing_ok=True)
+    wavs = ((p, p.stat()) for p in cache_dir.glob("*.wav") if p.is_file())
+    files = [CacheFile(p, st.st_size, st.st_mtime) for p, st in wavs]
+    for path in evictions(files, limit_mb * 1024 * 1024):
+        path.unlink(missing_ok=True)
 
 
 class SynthWorker(threading.Thread):
@@ -264,8 +313,14 @@ class SynthWorker(threading.Thread):
     otherwise blocks until the file appears or synthesis fails.
     """
 
-    def __init__(self, paras: list[str], keys: list[str], cache_dir: Path,
-                 say_cmd: list[str], ahead: int = 3) -> None:
+    def __init__(
+        self,
+        paras: Sequence[str],
+        keys: Sequence[str],
+        cache_dir: Path,
+        say_cmd: Sequence[str],
+        ahead: int = 3,
+    ) -> None:
         super().__init__(daemon=True)
         self._paras = paras
         self._keys = keys
@@ -341,32 +396,31 @@ class SynthWorker(threading.Thread):
         """Run one say -o job; record success (file rename) or failure."""
         path = self.path_for(idx)
         tmp = path.with_name(path.name + ".part")
-        proc = subprocess.Popen(self._say_cmd + ["-o", str(tmp)],
-                                stdin=subprocess.PIPE,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.PIPE)
+        proc = subprocess.Popen(
+            (*self._say_cmd, "-o", str(tmp)),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
         err = b""
         stdin = proc.stdin
         if stdin is not None:
-            try:
+            with contextlib.suppress(BrokenPipeError, OSError):
                 stdin.write(self._paras[idx].encode("utf-8"))
-                stdin.close()
-            except (BrokenPipeError, OSError):
-                pass  # say died before reading; stderr carries the reason
+                stdin.close()  # say died before reading; stderr carries the reason
         stderr = proc.stderr
         if stderr is not None:
-            try:
+            with contextlib.suppress(OSError):
                 err = stderr.read() or b""  # EOF when the process exits
-            except OSError:
-                pass
         rc = proc.wait()
         ok = rc == 0 and tmp.exists()
         if ok:
             tmp.replace(path)
         with self._cond:
             if not ok:
-                self._failed[idx] = " ".join(
-                    err.decode("utf-8", "replace").split())[:200]
+                self._failed[idx] = " ".join(err.decode("utf-8", "replace").split())[
+                    :200
+                ]
             self._cond.notify_all()
 
 
@@ -379,6 +433,138 @@ class SynthWorker(threading.Thread):
 # samples the moment the current ones run out — no silence between paragraphs.
 # The pull generator runs on the audio callback thread and must never block:
 # when there is nothing to play it yields silence and the device stays open.
+#
+# The stream itself is an immutable value (StreamState below).  All of its
+# transitions — play, prime, stop, pull — are pure functions; ChainEngine is
+# the thin effectful shell that guards them with a lock, decodes files, and
+# dispatches their events.
+
+
+@dataclass(frozen=True)
+class StreamState:
+    """Immutable snapshot of the chained sample stream.
+
+    `sources`/`paths` hold decoded samples and their files for the live
+    window; `cur`/`data`/`pos` are the paragraph being streamed; `chained`
+    is a decoded next paragraph the stream may roll into; `gap_left` is
+    inter-paragraph silence still owed.
+    """
+
+    sources: Mapping[int, bytes] = field(default_factory=dict[int, bytes])
+    paths: Mapping[int, Path] = field(default_factory=dict[int, Path])
+    cur: int | None = None
+    data: bytes = b""
+    pos: int = 0
+    chained: int | None = None
+    gap_left: int = 0
+
+
+def stream_gc(s: StreamState) -> StreamState:
+    """Drop samples/paths below the stream's lowest live paragraph."""
+    if s.cur is None and s.chained is None:
+        return s
+    floor = min(i for i in (s.cur, s.chained) if i is not None)
+    return replace(
+        s,
+        sources={i: b for i, b in s.sources.items() if i >= floor},
+        paths={i: p for i, p in s.paths.items() if i >= floor},
+    )
+
+
+def stream_play(s: StreamState, idx: int, path: Path, data: bytes) -> StreamState:
+    """Start streaming paragraph idx from freshly decoded samples."""
+    return stream_gc(
+        replace(
+            s,
+            sources={**s.sources, idx: data},
+            paths={**s.paths, idx: path},
+            cur=idx,
+            data=data,
+            pos=0,
+            chained=None,
+        )
+    )
+
+
+def stream_prime(s: StreamState, idx: int, path: Path, data: bytes) -> StreamState:
+    """Register decoded-ahead samples; chain them if they directly follow."""
+    chained = idx if s.cur is not None and idx == s.cur + 1 else s.chained
+    return replace(
+        s,
+        sources={**s.sources, idx: data},
+        paths={**s.paths, idx: path},
+        chained=chained,
+    )
+
+
+def stream_stop(s: StreamState) -> StreamState:
+    """Go idle.  The device stays open; replay starts from stream_play."""
+    return stream_gc(replace(s, cur=None, data=b"", pos=0, chained=None, gap_left=0))
+
+
+def stream_next_chunk(
+    s: StreamState,
+    want: int,
+    gap_bytes: int,
+    fails_at: Callable[[int], bool],
+) -> tuple[bytes | None, StreamState, tuple[tuple[Any, ...], ...]]:
+    """Pure core of the stream pull: the next `want` bytes of audio.
+
+    Paragraph boundaries are transparent: a single request can span the
+    end of one paragraph, the configured inter-paragraph gap, and the
+    start of the chained next one, so the stream is continuous at any
+    request size.
+
+    Returns (chunk, successor state, events).  `chunk` is None when the
+    stream is idle.  "started" is an internal event the engine performs
+    as its `_on_started` hook instead of queueing it.
+    """
+    state = s
+    parts: tuple[bytes, ...] = ()
+    events: tuple[tuple[Any, ...], ...] = ()
+    need = want
+    while need > 0:
+        if state.gap_left > 0:
+            take = min(need, state.gap_left)
+            parts += (b"\x00" * take,)
+            state = replace(state, gap_left=state.gap_left - take)
+            need -= take
+            continue
+        if state.cur is None:
+            break
+        cur = state.cur
+        if state.pos >= len(state.data):
+            nxt = state.chained
+            chained = nxt is not None and nxt in state.sources
+            events += (("finished", cur, chained),)
+            if nxt is None or nxt not in state.sources:
+                state = stream_stop(state)
+                break
+            state = stream_gc(
+                replace(
+                    state,
+                    cur=nxt,
+                    data=state.sources[nxt],
+                    pos=0,
+                    chained=None,
+                    gap_left=gap_bytes,
+                )
+            )
+            events += (("chained", nxt),)
+            continue
+        if state.pos == 0:
+            if fails_at(cur):
+                events += (("crashed", cur, "simulated device error"),)
+                state = replace(state, cur=None, data=b"", pos=0, chained=None)
+                break
+            events += (("started", cur),)
+        take = min(need, len(state.data) - state.pos)
+        parts += (state.data[state.pos : state.pos + take],)
+        state = replace(state, pos=state.pos + take)
+        need -= take
+    if not parts:
+        return None, state, events
+    return b"".join(parts), state, events
 
 
 class ChainEngine:
@@ -398,14 +584,8 @@ class ChainEngine:
         self._gap_ms = gap_ms
         self._recompute_gap()
         self._lock = threading.Lock()
-        self.events: queue.SimpleQueue = queue.SimpleQueue()
-        self._paths: dict[int, Path] = {}
-        self._sources: dict[int, bytes] = {}
-        self._cur: int | None = None
-        self._data = b""
-        self._pos = 0
-        self._chained: int | None = None
-        self._gap_left = 0
+        self.events: queue.SimpleQueue[tuple[Any, ...]] = queue.SimpleQueue()
+        self._stream = StreamState()
         self._closed = False
 
     # -- main-thread API ----------------------------------------------------
@@ -414,13 +594,7 @@ class ChainEngine:
         """Start streaming paragraph idx from its cached file."""
         data = self._load(path)
         with self._lock:
-            self._paths[idx] = path
-            self._sources[idx] = data
-            self._cur = idx
-            self._data = data
-            self._pos = 0
-            self._chained = None
-            self._gc_locked()
+            self._stream = stream_play(self._stream, idx, path, data)
 
     def prime(self, idx: int, path: Path) -> None:
         """Decode a paragraph ahead of time so the chain can reach it."""
@@ -429,35 +603,30 @@ class ChainEngine:
         except Exception:
             return  # best effort; the fallback path will retry via play()
         with self._lock:
-            self._paths[idx] = path
-            self._sources[idx] = data
-            if self._cur is not None and idx == self._cur + 1:
-                self._chained = idx
+            self._stream = stream_prime(self._stream, idx, path, data)
 
     def stop_stream(self) -> None:
         """Stop playback.  The device stays open; replay is instant."""
         with self._lock:
-            self._cur = None
-            self._data = b""
-            self._pos = 0
-            self._chained = None
-            self._gap_left = 0
-            self._gc_locked()
+            self._stream = stream_stop(self._stream)
 
     def current_index(self) -> int | None:
         """The paragraph currently streaming, or None when idle/finished."""
         with self._lock:
-            return self._cur
+            return self._stream.cur
 
     def close(self) -> None:
         with self._lock:
             self._closed = True
-            self._cur = None
-            self._chained = None
-            self._gap_left = 0
+            self._stream = stream_stop(self._stream)
         self._on_close()
 
     # -- hooks for subclasses ------------------------------------------------
+
+    @property
+    def _paths(self) -> Mapping[int, Path]:
+        """Live paragraphs' paths (TestEngine's start log reads this)."""
+        return self._stream.paths
 
     def _load(self, path: Path) -> bytes:
         raise NotImplementedError
@@ -480,7 +649,7 @@ class ChainEngine:
             chunk = self._next_chunk(self._chunk_bytes)
             yield chunk if chunk is not None else b"\x00" * self._chunk_bytes
 
-    def _pull_frames(self) -> Iterator[bytes]:
+    def _pull_frames(self) -> Generator[bytes, int | None, None]:
         """Protocol generator for the miniaudio device.
 
         The device callback sends in the number of frames it wants and we
@@ -508,68 +677,17 @@ class ChainEngine:
         self._recompute_gap()
 
     def _next_chunk(self, want: int) -> bytes | None:
-        """Return exactly `want` bytes of the stream, or None when idle.
-
-        Paragraph boundaries are transparent: a single request can span the
-        end of one paragraph, the configured inter-paragraph gap, and the
-        start of the chained next one, so the stream is continuous at any
-        request size.
-        """
-        parts: list[bytes] = []
+        """Apply one pure stream step; dispatch its events under the lock."""
         with self._lock:
-            need = want
-            while need > 0:
-                if self._gap_left > 0:
-                    take = min(need, self._gap_left)
-                    parts.append(b"\x00" * take)
-                    self._gap_left -= take
-                    need -= take
-                    continue
-                if self._cur is None:
-                    break
-                if self._pos >= len(self._data):
-                    nxt = self._chained
-                    chained = nxt is not None and nxt in self._sources
-                    self.events.put(("finished", self._cur, chained))
-                    self._chained = None
-                    if nxt is None or nxt not in self._sources:
-                        self._cur = None
-                        self._data = b""
-                        self._pos = 0
-                        break
-                    self._cur = nxt
-                    self._data = self._sources[nxt]
-                    self._pos = 0
-                    self._gap_left = self._gap_bytes
-                    self.events.put(("chained", nxt))
-                    self._gc_locked()
-                    continue
-                if self._pos == 0:
-                    if self._fail_idx(self._cur):
-                        self.events.put(("crashed", self._cur,
-                                         "simulated device error"))
-                        self._cur = None
-                        self._data = b""
-                        self._chained = None
-                        break
-                    self._on_started(self._cur)
-                take = min(need, len(self._data) - self._pos)
-                parts.append(self._data[self._pos:self._pos + take])
-                self._pos += take
-                need -= take
-        if not parts:
-            return None
-        return b"".join(parts)
-
-    def _gc_locked(self) -> None:
-        keep = [x for x in (self._cur, self._chained) if x is not None]
-        if not keep:
-            return
-        floor = min(keep)
-        for k in [k for k in self._sources if k < floor]:
-            del self._sources[k]
-        for k in [k for k in self._paths if k < floor]:
-            del self._paths[k]
+            chunk, self._stream, step_events = stream_next_chunk(
+                self._stream, want, self._gap_bytes, self._fail_idx
+            )
+            for ev in step_events:
+                if ev[0] == "started":
+                    self._on_started(ev[1])
+                else:
+                    self.events.put(ev)
+        return chunk
 
 
 class MiniaudioEngine(ChainEngine):
@@ -577,11 +695,11 @@ class MiniaudioEngine(ChainEngine):
 
     def __init__(self, chunk_bytes: int = 1102, gap_ms: int = 0) -> None:
         super().__init__(chunk_bytes, gap_ms)
-        self._device = None
+        self._device: Any = None
 
     def _load(self, path: Path) -> bytes:
         decoded = miniaudio.wav_read_file_s16(str(path))
-        return decoded.samples.tobytes()
+        return cast(bytes, decoded.samples.tobytes())
 
     def play(self, idx: int, path: Path) -> None:
         self._ensure_device(path)
@@ -646,8 +764,7 @@ class TestEngine(ChainEngine):
     def play(self, idx: int, path: Path) -> None:
         super().play(idx, path)
         if self._drain is None or not self._drain.is_alive():
-            self._drain = threading.Thread(target=self._drain_loop,
-                                           daemon=True)
+            self._drain = threading.Thread(target=self._drain_loop, daemon=True)
             self._drain.start()
 
     def _drain_loop(self) -> None:
@@ -659,25 +776,26 @@ class TestEngine(ChainEngine):
 class SubprocessEngine:
     """afplay fallback: one external process per paragraph (with gaps)."""
 
-    def __init__(self, play_cmd: list[str], gap_ms: int = 0) -> None:
+    def __init__(self, play_cmd: Sequence[str], gap_ms: int = 0) -> None:
         self._cmd = play_cmd
         self._gap_ms = gap_ms  # not applicable: gaps live inside the stream
-        self.events: queue.SimpleQueue = queue.SimpleQueue()
-        self._proc: subprocess.Popen | None = None
+        self.events: queue.SimpleQueue[tuple[Any, ...]] = queue.SimpleQueue()
+        self._proc: subprocess.Popen[bytes] | None = None
         self._idx: int | None = None
         self._reported = True
 
     def play(self, idx: int, path: Path) -> None:
         self.stop_stream()
-        self._proc = subprocess.Popen(self._cmd + [str(path)],
-                                      stdout=subprocess.DEVNULL,
-                                      stderr=subprocess.PIPE)
+        self._proc = subprocess.Popen(
+            (*self._cmd, str(path)), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+        )
         self._idx = idx
         self._reported = False
-        threading.Thread(target=self._watch, args=(idx, self._proc),
-                         daemon=True).start()
+        threading.Thread(
+            target=self._watch, args=(idx, self._proc), daemon=True
+        ).start()
 
-    def _watch(self, idx: int, proc: subprocess.Popen) -> None:
+    def _watch(self, idx: int, proc: subprocess.Popen[bytes]) -> None:
         """Push the exit event for one spawned player process."""
         rc = proc.wait()
         if self._reported:
@@ -687,17 +805,14 @@ class SubprocessEngine:
         else:
             stderr = proc.stderr.read() if proc.stderr is not None else b""
             tail = " ".join(stderr.decode("utf-8", "replace").split())[:200]
-            self.events.put(("crashed", idx,
-                             f"player exited with code {rc}: {tail}"))
+            self.events.put(("crashed", idx, f"player exited with code {rc}: {tail}"))
 
     def stop_stream(self) -> None:
         p = self._proc
         if p is not None and p.poll() is None:
             self._reported = True  # user-initiated stop: never a "crash"
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 p.terminate()
-            except ProcessLookupError:
-                pass
             try:
                 p.wait(timeout=2)
             except subprocess.TimeoutExpired:
@@ -721,8 +836,9 @@ class SubprocessEngine:
         self.stop_stream()
 
 
-def make_engine(player: str, play_cmd: list[str],
-                gap_ms: int = 0) -> ChainEngine | SubprocessEngine:
+def make_engine(
+    player: str, play_cmd: Sequence[str], gap_ms: int = 0
+) -> ChainEngine | SubprocessEngine:
     if player == "afplay":
         return SubprocessEngine(play_cmd, gap_ms)
     if player == "test":
@@ -730,11 +846,16 @@ def make_engine(player: str, play_cmd: list[str],
     if HAVE_MINIAUDIO:
         return MiniaudioEngine(gap_ms=gap_ms)
     if player == "miniaudio":
-        print("t2s: --player miniaudio but the 'miniaudio' package is not "
-              "installed", file=sys.stderr)
+        print(
+            "t2s: --player miniaudio but the 'miniaudio' package is not installed",
+            file=sys.stderr,
+        )
         raise SystemExit(2)
-    print("t2s: miniaudio is not installed — falling back to afplay "
-          "(pip install miniaudio for gapless playback)", file=sys.stderr)
+    print(
+        "t2s: miniaudio is not installed — falling back to afplay "
+        "(pip install miniaudio for gapless playback)",
+        file=sys.stderr,
+    )
     return SubprocessEngine(play_cmd)
 
 
@@ -742,39 +863,71 @@ def make_engine(player: str, play_cmd: list[str],
 # Application                                                                 #
 # --------------------------------------------------------------------------- #
 
+PlayState = Literal["playing", "paused", "stopped"]
+PlayOutcome = Literal["playing", "paused", "failed"]
+
+
+def build_say_cmd(
+    say_bin: str, voice: str | None, rate: int | None, data_format: str
+) -> tuple[str, ...]:
+    """The say invocation that renders one paragraph (text on stdin) to WAV."""
+    options = (
+        ("-v", voice) if voice else (),
+        ("-r", str(rate)) if rate else (),
+        ("--file-format", "WAVE"),
+        ("--data-format", data_format),
+    )
+    return (say_bin, *chain.from_iterable(options))
+
+
+def done_message(count: int, had_errors: bool) -> str:
+    """The final status line once the document has finished."""
+    if had_errors:
+        return "✓ done (with errors)"
+    return f"✓ done — {count} paragraph{'s' if count != 1 else ''}"
+
+
 class App:
     """Owns the paragraph queue, playback state, keyboard and display."""
 
-    def __init__(self, paras: list[str], start_idx: int = 0, width: int = 72,
-                 voice: str | None = None, rate: int | None = None,
-                 say_bin: str | None = None, play_bin: str | None = None,
-                 cache_dir: str | None = None, cache_limit_mb: float = 256.0,
-                 ahead: int = 3, player: str = "auto",
-                 gap_ms: int = 0, data_format: str | None = None) -> None:
+    def __init__(
+        self,
+        paras: list[str],
+        start_idx: int = 0,
+        width: int = 72,
+        voice: str | None = None,
+        rate: int | None = None,
+        say_bin: str | None = None,
+        play_bin: str | None = None,
+        cache_dir: str | None = None,
+        cache_limit_mb: float = 256.0,
+        ahead: int = 3,
+        player: str = "auto",
+        gap_ms: int = 0,
+        data_format: str | None = None,
+    ) -> None:
         self.paras = paras
         self.idx = start_idx
         self.width = width
         self.ansi = sys.stdout.isatty()
-        self.state = "stopped"  # playing | paused | stopped
+        self.state: PlayState = "stopped"
         self.running = False
         self._had_errors = False
 
-        say_cmd = [say_bin or os.environ.get("T2S_SAY_BIN") or "say"]
-        if voice:
-            say_cmd += ["-v", voice]
-        if rate:
-            say_cmd += ["-r", str(rate)]
+        say_bin = say_bin or os.environ.get("T2S_SAY_BIN") or "say"
         fmt = data_format or default_data_format()
-        say_cmd += ["--file-format", "WAVE", "--data-format", fmt]
-        keys = [cache_key(p, voice, rate, fmt) for p in paras]
-        self.cache_dir = Path(cache_dir) if cache_dir else (
-            Path.home() / "Library" / "Caches" / "t2s")
+        say_cmd = build_say_cmd(say_bin, voice, rate, fmt)
+        keys = tuple(cache_key(p, voice, rate, fmt) for p in paras)
+        self.cache_dir = (
+            Path(cache_dir)
+            if cache_dir
+            else (Path.home() / "Library" / "Caches" / "t2s")
+        )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         prune_cache(self.cache_dir, cache_limit_mb)
-        self.synth = SynthWorker(paras, keys, self.cache_dir, say_cmd,
-                                 ahead=ahead)
+        self.synth = SynthWorker(paras, keys, self.cache_dir, say_cmd, ahead=ahead)
 
-        play_cmd = [play_bin or os.environ.get("T2S_PLAY_BIN") or "afplay"]
+        play_cmd = (play_bin or os.environ.get("T2S_PLAY_BIN") or "afplay",)
         self.engine = make_engine(player, play_cmd, gap_ms)
 
         # Keyboard source: stdin when it is a terminal, otherwise the
@@ -789,7 +942,7 @@ class App:
             except OSError:
                 self.key_fd = None
         self._termios_fd: int | None = None
-        self._termios_old = None
+        self._termios_old: list[int | list[bytes | int]] | None = None
 
     # -- display ------------------------------------------------------------
 
@@ -805,7 +958,7 @@ class App:
 
     # -- playback -----------------------------------------------------------
 
-    def play(self, idx: int, note: str | None = None) -> str:
+    def play(self, idx: int, note: str | None = None) -> PlayOutcome:
         """Start playing paragraph idx.
 
         Returns "playing", "paused" (interactive synthesis failure — wait
@@ -863,11 +1016,7 @@ class App:
             self._had_errors = True
             nxt += 1
         self.running = False
-        if after_error or self._had_errors:
-            self._note("✓ done (with errors)")
-        else:
-            n = len(self.paras)
-            self._note(f"✓ done — {n} paragraph{'s' if n != 1 else ''}")
+        self._note(done_message(len(self.paras), after_error or self._had_errors))
 
     def run(self) -> int:
         self.running = True
@@ -890,11 +1039,10 @@ class App:
             self._note("· interrupted")
         finally:
             if self._termios_fd is not None and self._termios_old is not None:
-                try:
-                    termios.tcsetattr(self._termios_fd, termios.TCSADRAIN,
-                                      self._termios_old)
-                except termios.error:
-                    pass
+                with contextlib.suppress(termios.error):
+                    termios.tcsetattr(
+                        self._termios_fd, termios.TCSADRAIN, self._termios_old
+                    )
             self.engine.stop_stream()
             self.engine.close()
             self.synth.stop()
@@ -941,8 +1089,7 @@ class App:
                 msg = f"! playback failed: {ev[2]}"
                 if self.key_fd is not None:
                     self._warn(msg)
-                    self._status("⏸ device error — space: replay · "
-                                 "n/p: skip · q: quit")
+                    self._status("⏸ device error — space: replay · n/p: skip · q: quit")
                     self.state = "paused"
                 else:
                     self._warn(msg + " — continuing with next paragraph")
@@ -964,12 +1111,7 @@ class App:
                         return
                 else:
                     self.running = False
-                    if self._had_errors:
-                        self._note("✓ done (with errors)")
-                    else:
-                        n = len(self.paras)
-                        self._note(f"✓ done — {n} paragraph"
-                                   f"{'s' if n != 1 else ''}")
+                    self._note(done_message(len(self.paras), self._had_errors))
             elif kind == "chained":
                 if self.state == "playing":
                     self._sync_to(ev[1])
@@ -985,8 +1127,9 @@ class App:
                 if self.engine.current_index() is not None:
                     self.engine.stop_stream()
                     self.state = "paused"
-                    self._status("⏸ paused — space: replay paragraph · "
-                                 "n/p: paragraph · q: quit")
+                    self._status(
+                        "⏸ paused — space: replay paragraph · n/p: paragraph · q: quit"
+                    )
                 # else: the paragraph already finished; the next tick advances
             elif self.state == "paused":
                 self.synth.clear_failure(self.idx)
@@ -1021,53 +1164,103 @@ class App:
 # CLI                                                                         #
 # --------------------------------------------------------------------------- #
 
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="t2s",
         description="Read a document aloud with macOS say(1), paragraph by "
-                    "paragraph (space: pause/replay, n/p: skip, q: quit). "
-                    "Paragraphs are synthesized ahead to a cache and played "
-                    "with afplay.",
+        "paragraph (space: pause/replay, n/p: skip, q: quit). "
+        "Paragraphs are synthesized ahead to a cache and played "
+        "with afplay.",
     )
-    p.add_argument("file", nargs="?", default="-",
-                   help="text file to read ('-' or omitted: standard input)")
+    p.add_argument(
+        "file",
+        nargs="?",
+        default="-",
+        help="text file to read ('-' or omitted: standard input)",
+    )
     p.add_argument("-v", "--voice", help="voice name passed to say")
-    p.add_argument("-r", "--rate", type=int, metavar="WPM",
-                   help="speech rate in words per minute")
-    p.add_argument("--width", type=int, default=72, metavar="COLS",
-                   help="display wrap width (default: 72)")
-    p.add_argument("--start", type=int, default=1, metavar="N",
-                   help="paragraph number to start from (1-based)")
-    p.add_argument("--split-long", type=int, default=None, metavar="CHARS",
-                   help="also split paragraphs longer than CHARS at "
-                        "sentence boundaries")
-    p.add_argument("--ahead", type=int, default=3, metavar="N",
-                   help="paragraphs to synthesize ahead of playback "
-                        "(default: 3; raise for slow premium voices)")
-    p.add_argument("--cache-dir", default=None, metavar="PATH",
-                   help="audio cache directory "
-                        "(default: ~/Library/Caches/t2s)")
-    p.add_argument("--cache-limit-mb", type=float, default=256.0, metavar="MB",
-                   help="prune the cache when larger than this "
-                        "(default: 256; 0 = unlimited)")
-    p.add_argument("--say-bin", default=None, metavar="PATH",
-                   help="say binary to run (default: say, or $T2S_SAY_BIN); "
-                        "useful for testing with a fake")
-    p.add_argument("--play-bin", default=None, metavar="PATH",
-                   help="audio player binary (default: afplay, or "
-                        "$T2S_PLAY_BIN)")
-    p.add_argument("--gap", type=int, default=0, metavar="MS",
-                   help="silence between paragraphs in milliseconds "
-                        "(default: 0)")
-    p.add_argument("--data-format", default=None, metavar="FMT",
-                   help="synthesis format for say, e.g. LEI16@48000 "
-                        "(default: LEI16 at the output device's native rate)")
-    p.add_argument("--player", default="auto",
-                   choices=["auto", "miniaudio", "afplay", "test"],
-                   help="playback engine: miniaudio (gapless in-process "
-                        "streaming), afplay (external process fallback), "
-                        "test (headless, for t2s's own tests), or auto "
-                        "(default: miniaudio, falls back to afplay)")
+    p.add_argument(
+        "-r", "--rate", type=int, metavar="WPM", help="speech rate in words per minute"
+    )
+    p.add_argument(
+        "--width",
+        type=int,
+        default=72,
+        metavar="COLS",
+        help="display wrap width (default: 72)",
+    )
+    p.add_argument(
+        "--start",
+        type=int,
+        default=1,
+        metavar="N",
+        help="paragraph number to start from (1-based)",
+    )
+    p.add_argument(
+        "--split-long",
+        type=int,
+        default=None,
+        metavar="CHARS",
+        help="also split paragraphs longer than CHARS at sentence boundaries",
+    )
+    p.add_argument(
+        "--ahead",
+        type=int,
+        default=3,
+        metavar="N",
+        help="paragraphs to synthesize ahead of playback "
+        "(default: 3; raise for slow premium voices)",
+    )
+    p.add_argument(
+        "--cache-dir",
+        default=None,
+        metavar="PATH",
+        help="audio cache directory (default: ~/Library/Caches/t2s)",
+    )
+    p.add_argument(
+        "--cache-limit-mb",
+        type=float,
+        default=256.0,
+        metavar="MB",
+        help="prune the cache when larger than this (default: 256; 0 = unlimited)",
+    )
+    p.add_argument(
+        "--say-bin",
+        default=None,
+        metavar="PATH",
+        help="say binary to run (default: say, or $T2S_SAY_BIN); "
+        "useful for testing with a fake",
+    )
+    p.add_argument(
+        "--play-bin",
+        default=None,
+        metavar="PATH",
+        help="audio player binary (default: afplay, or $T2S_PLAY_BIN)",
+    )
+    p.add_argument(
+        "--gap",
+        type=int,
+        default=0,
+        metavar="MS",
+        help="silence between paragraphs in milliseconds (default: 0)",
+    )
+    p.add_argument(
+        "--data-format",
+        default=None,
+        metavar="FMT",
+        help="synthesis format for say, e.g. LEI16@48000 "
+        "(default: LEI16 at the output device's native rate)",
+    )
+    p.add_argument(
+        "--player",
+        default="auto",
+        choices=["auto", "miniaudio", "afplay", "test"],
+        help="playback engine: miniaudio (gapless in-process "
+        "streaming), afplay (external process fallback), "
+        "test (headless, for t2s's own tests), or auto "
+        "(default: miniaudio, falls back to afplay)",
+    )
     p.add_argument("--version", action="version", version=__version__)
     return p
 
@@ -1077,8 +1270,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.file == "-":
         if sys.stdin.isatty():
-            print("t2s: no input — pass a file path or pipe text "
-                  "(see t2s --help)", file=sys.stderr)
+            print(
+                "t2s: no input — pass a file path or pipe text (see t2s --help)",
+                file=sys.stderr,
+            )
             return 2
         text = sys.stdin.read()
     else:
@@ -1093,16 +1288,28 @@ def main(argv: list[str] | None = None) -> int:
         print("t2s: input contains no text", file=sys.stderr)
         return 1
     if not 1 <= args.start <= len(paras):
-        print(f"t2s: --start {args.start} is out of range "
-              f"(document has {len(paras)} paragraphs)", file=sys.stderr)
+        print(
+            f"t2s: --start {args.start} is out of range "
+            f"(document has {len(paras)} paragraphs)",
+            file=sys.stderr,
+        )
         return 2
 
-    app = App(paras=paras, start_idx=args.start - 1, width=args.width,
-              voice=args.voice, rate=args.rate,
-              say_bin=args.say_bin, play_bin=args.play_bin,
-              cache_dir=args.cache_dir, cache_limit_mb=args.cache_limit_mb,
-              ahead=args.ahead, player=args.player, gap_ms=args.gap,
-              data_format=args.data_format)
+    app = App(
+        paras=paras,
+        start_idx=args.start - 1,
+        width=args.width,
+        voice=args.voice,
+        rate=args.rate,
+        say_bin=args.say_bin,
+        play_bin=args.play_bin,
+        cache_dir=args.cache_dir,
+        cache_limit_mb=args.cache_limit_mb,
+        ahead=args.ahead,
+        player=args.player,
+        gap_ms=args.gap,
+        data_format=args.data_format,
+    )
     try:
         return app.run()
     except BrokenPipeError:
