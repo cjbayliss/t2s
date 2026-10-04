@@ -1,9 +1,3 @@
-"""Command line: argument parsing and the program's outermost edge.
-
-Reading the document, probing the audio device, creating the cache —
-all effects happen here or in open_app; everything after them is pure.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -11,7 +5,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .app import config_from_args, open_app
+from .app import args_from_namespace, config_from_args, open_app
 from .pure import split_paragraphs
 
 
@@ -116,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = args_from_namespace(build_parser().parse_args(argv))
 
     if args.file == "-":
         if sys.stdin.isatty():

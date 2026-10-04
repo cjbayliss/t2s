@@ -37,6 +37,13 @@ gate every change must pass.
    (time, randomness, environment, device state) enters as an explicit
    parameter, never as a direct call buried in pure code.
 
+7. **No comments, no docstrings.** Names, types, and tests carry the
+   meaning; design rationale lives in this file and the README.
+   `tests/test_source_bans.py` (AST + tokenize) fails on any `#`
+   comment or docstring anywhere in `t2s/` or `tests/`, so violations
+   cannot merge. There is consequently no such thing as a `noqa`: fix
+   the code instead of suppressing the rule.
+
 ## Layout
 
 The package is split by purity; keep the boundary sharp when you edit.
@@ -63,8 +70,8 @@ Both tools are configured in `pyproject.toml`; install with
 
 - **ruff** — formats and lints everything (`t2s/`, `tests/`). The rule
   set pulls in isort, pyupgrade, bugbear, comprehensions, simplify,
-  return, and perflint; fixes are preferred over suppressions, and a
-  `noqa` needs a reason.
+  return, and perflint; fixes are preferred, and with comments banned
+  (rule 7) suppressions are impossible — the code must stand on its own.
 - **mypy** — `strict = true` over `t2s/` and `tests/`. Every function
   is fully annotated. The untyped `miniaudio` edge is contained with
   `Any`/`cast` and an `ignore_missing_imports` override; don't let

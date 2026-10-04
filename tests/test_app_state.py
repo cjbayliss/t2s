@@ -1,11 +1,3 @@
-"""Pure tests for the application state machine: no pty, no sleeps.
-
-Keys, engine events, skip chains and the done line are functions from
-(state, input) to (state, effects), so they are exercised here by plain
-value assertions.  The pty tests in test_interactive.py then only have
-to prove that the shell performs what these transitions decide.
-"""
-
 from t2s.pure import (
     AppState,
     ClearFailure,
@@ -45,9 +37,6 @@ def s(
     )
 
 
-# -- keys -------------------------------------------------------------------
-
-
 def test_q_quits_with_position_note() -> None:
     st, efs = handle_key(s(idx=1, n=5, mode="playing"), "q")
     assert st == s(idx=1, n=5, mode="playing", running=False)
@@ -69,7 +58,6 @@ def test_space_pauses_a_running_stream() -> None:
 
 
 def test_space_while_playing_but_idle_is_a_no_op() -> None:
-    """The paragraph already finished; the next tick advances."""
     st, efs = handle_key(s(mode="playing"), " ", engine_cur=None)
     assert st == s(mode="playing")
     assert efs == ()
@@ -89,7 +77,7 @@ def test_space_while_stopped_is_a_no_op() -> None:
 
 def test_n_advances_via_tryplay() -> None:
     st, efs = handle_key(s(mode="playing"), "n")
-    assert st == s(mode="playing")  # the state moves only on the outcome
+    assert st == s(mode="playing")
     assert efs == (TryPlay(1),)
 
 
@@ -115,9 +103,6 @@ def test_unknown_key_is_ignored() -> None:
     assert efs == ()
 
 
-# -- engine events ----------------------------------------------------------
-
-
 def test_finished_mid_document_advances() -> None:
     st, efs = handle_engine_event(s(mode="playing"), StreamFinished(0, False))
     assert st == s(mode="playing")
@@ -134,6 +119,13 @@ def test_chained_event_syncs_the_display() -> None:
     st, efs = handle_engine_event(s(mode="playing"), StreamChained(1))
     assert st == s(idx=1, mode="playing")
     assert efs == (SyncTo(1),)
+
+
+def test_chained_event_while_not_playing_is_ignored() -> None:
+    for mode in ("paused", "stopped"):
+        st, efs = handle_engine_event(s(mode=mode), StreamChained(1))
+        assert st == s(mode=mode)
+        assert efs == ()
 
 
 def test_finished_last_paragraph_finishes_the_document() -> None:
@@ -184,13 +176,9 @@ def test_crash_while_paused_is_ignored() -> None:
 
 
 def test_started_events_never_reach_the_application() -> None:
-    """Started is an internal event: the engine's hook consumed it."""
     st, efs = handle_engine_event(s(mode="playing"), StreamStarted(0))
     assert st == s(mode="playing")
     assert efs == ()
-
-
-# -- play outcomes / skip chains ---------------------------------------------
 
 
 def test_play_resolved_playing_commits() -> None:
@@ -218,8 +206,6 @@ def test_play_resolved_failed_on_last_finishes_with_errors() -> None:
 
 
 def test_skip_chain_is_loop_free() -> None:
-    """Every render fails: the interpreter folds failures one TryPlay at a
-    time until the document is done — no recursion, no stack growth."""
     st, efs = play_resolved(s(n=4), 0, "failed")
     tried: list[int] = []
     while efs and isinstance(efs[0], TryPlay):
@@ -241,9 +227,6 @@ def test_advance_at_the_end_finishes() -> None:
     st, efs = advance(s(idx=2))
     assert st == s(idx=2, running=False)
     assert efs == (Note("✓ done — 3 paragraphs"),)
-
-
-# -- messages ----------------------------------------------------------------
 
 
 def test_done_message_singular_plural_and_errors() -> None:

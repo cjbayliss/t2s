@@ -1,5 +1,3 @@
-"""Shared fixtures for the t2s test suite."""
-
 import os
 import subprocess
 import sys
@@ -21,12 +19,10 @@ class Fakes:
     say_log: Path
 
     def played_texts(self) -> list[str]:
-        """Paragraph text prefixes in the order they were played."""
         return texts_played(self.say_log, self.play_log)
 
 
 def texts_played(say_log: Path, play_log: Path) -> list[str]:
-    """Map played cache files back to paragraph text prefixes, in order."""
     mapping: dict[str, str] = {}
     if say_log.exists():
         for line in say_log.read_text().splitlines():
@@ -40,7 +36,6 @@ def texts_played(say_log: Path, play_log: Path) -> list[str]:
 def engine_log_env(
     tmp_path: Path, delay: str = "0.05", fail_at: str | None = None
 ) -> tuple[dict[str, str], Path]:
-    """Env for --player test plus the path its play log will appear at."""
     log = tmp_path / "engine-play.log"
     env = {"T2S_TEST_PLAY_LOG": str(log), "T2S_TEST_PLAY_DELAY": delay}
     if fail_at:
@@ -61,9 +56,7 @@ def _wrapper(tmp_path: Path, name: str, src: Path, env: dict[str, Path]) -> str:
 
 @pytest.fixture
 def fakes(tmp_path: Path) -> Fakes:
-    """Executable fake say (offline WAV generator) and fake afplay with
-    play/render logs, so tests run silently and deterministically."""
-    if os.name != "posix":  # pragma: no cover
+    if os.name != "posix":
         pytest.skip("fake binaries require a POSIX shell")
     play_log = tmp_path / "play.log"
     say_log = tmp_path / "say.log"
@@ -79,13 +72,6 @@ def run_t2s(
     input: bytes | None = None,
     timeout: float = 30.0,
 ) -> subprocess.CompletedProcess[str]:
-    """Run t2s as a subprocess.
-
-    Binary capture + manual decode: text mode would apply universal-newline
-    translation, corrupting any \\r in the captured output.  Always pass a
-    --cache-dir in args to keep the real user cache untouched.  Runs via
-    `python -m t2s` with the repo on cwd, so no install is required.
-    """
     cmd = [sys.executable, "-m", "t2s"]
     if fakes is not None:
         cmd += ["--say-bin", fakes.say_bin, "--play-bin", fakes.play_bin]

@@ -1,5 +1,3 @@
-"""Tests for width-aware wrapping with offset tracking."""
-
 from t2s.pure import wrap_offsets
 
 
@@ -34,11 +32,10 @@ def test_offsets_map_back() -> None:
 
 
 def test_multiple_spaces_preserved_via_offsets() -> None:
-    text = "one  two   three"  # irregular spacing
+    text = "one  two   three"
     out = lines(text, 7)
     for line, off in out:
         assert text[off : off + len(line)] == line
-    # Non-space characters all appear exactly once across the lines.
     assert "".join(line.replace(" ", "") for line, _ in out) == text.replace(" ", "")
 
 
@@ -50,8 +47,6 @@ def test_long_word_hard_break() -> None:
 def test_highlight_span_straddling_hard_break_clamps() -> None:
     text = "supercalifragilistic"
     out = lines(text, 10)
-    # Word is hard-broken across lines 1 and 2; a span over the whole word
-    # must clamp to each line's portion without raising.
     line1, off1 = out[0]
     s, e = 0, len(text)
     a = max(s - off1, 0)

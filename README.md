@@ -116,8 +116,9 @@ exercises keys, engine events and skip chains as plain values), so the
 pty tests only have to check that the shell performs what the pure
 transitions decide.
 
-Tests never touch audio (one test plays 0.2 s of silence through the real
-device and is skipped if miniaudio is unavailable): `tests/fake_say.py`
+Tests never touch audio (the real-device tests probe for a usable output
+device and skip when none is available, as on CI runners):
+`tests/fake_say.py`
 writes tiny WAVs offline, the `--player test` engine is fully headless and
 scriptable, and the interactive tests drive t2s through a pty pressing
 real keys.

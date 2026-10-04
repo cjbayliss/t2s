@@ -1,9 +1,3 @@
-"""End-to-end tests: run t2s as a subprocess with fake say (silent).
-
-Most tests run the default --player test engine (headless, fast); a few
-exercise the afplay fallback via the fake afplay binary.
-"""
-
 import subprocess
 import time
 from pathlib import Path
@@ -33,7 +27,6 @@ def run_doc(
     env_extra: dict[str, str] | None = None,
     player: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
-    """Write text to a temp doc, run t2s with fakes + isolated cache."""
     doc = tmp_path / "doc.txt"
     doc.write_text(text)
     cache = tmp_path / "cache"
@@ -117,7 +110,7 @@ def test_synthesis_failure_skips_paragraph(fakes: Fakes, tmp_path: Path) -> None
     env = dict(env, FAKE_SAY_FAIL_TEXT="CRASHER")
     r, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
     assert r.returncode == 0, r.stderr
-    assert "¶ 1/3" in r.stdout and "¶ 3/3" in r.stdout  # skipped the middle
+    assert "¶ 1/3" in r.stdout and "¶ 3/3" in r.stdout
     assert "could not render" in r.stderr
     assert "continuing with next paragraph" in r.stderr
     assert texts_played(fakes.say_log, play_log) == [PARAS[0], PARAS[2]]
@@ -147,7 +140,6 @@ def test_playback_failure_continues_noninteractive(
     assert r.returncode == 0, r.stderr
     assert "playback failed" in r.stderr
     assert "continuing with next paragraph" in r.stderr
-    # The failed stream never started, so it is not in the log.
     assert texts_played(fakes.say_log, play_log) == [PARAS[0], PARAS[2]]
 
 
@@ -159,7 +151,7 @@ def test_playback_failure_afplay_fallback(fakes: Fakes, tmp_path: Path) -> None:
     assert "playback failed" in r.stderr
     assert "player exited with code 3" in r.stderr
     assert "continuing with next paragraph" in r.stderr
-    assert fakes.played_texts() == PARAS  # fake afplay logs before failing
+    assert fakes.played_texts() == PARAS
 
 
 def test_cache_reused_across_runs(fakes: Fakes, tmp_path: Path) -> None:
@@ -170,7 +162,6 @@ def test_cache_reused_across_runs(fakes: Fakes, tmp_path: Path) -> None:
     args = [str(doc), "--cache-dir", str(cache), "--player", "test"]
 
     run_t2s(args, fakes, env_extra=env)
-    # Bounded wait: run 1 may exit while the synth worker is still writing.
     deadline = time.monotonic() + 5
     while len(list(cache.glob("*.wav"))) < len(PARAS) and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -180,7 +171,7 @@ def test_cache_reused_across_runs(fakes: Fakes, tmp_path: Path) -> None:
     assert r.returncode == 0, r.stderr
     renders_after_second = fakes.say_log.read_text().splitlines()
 
-    assert renders_after_second == renders_after_first  # nothing re-rendered
+    assert renders_after_second == renders_after_first
     assert texts_played(fakes.say_log, play_log) == PARAS + PARAS
 
 
@@ -232,7 +223,7 @@ def test_split_long_flag(fakes: Fakes, tmp_path: Path) -> None:
         "One two three four five six seven eight. "
         "Nine ten eleven twelve thirteen fourteen fifteen. "
         "Sixteen seventeen eighteen nineteen twenty."
-    )  # 141 chars
+    )
     env, play_log = engine_log_env(tmp_path)
     r, _ = run_doc(
         fakes,
@@ -245,7 +236,6 @@ def test_split_long_flag(fakes: Fakes, tmp_path: Path) -> None:
         env_extra=env,
     )
     assert r.returncode == 0, r.stderr
-    # 141-char para splits into 3 chunks at sentence boundaries -> 4 total.
     assert "¶ 1/4" in r.stdout
     assert "¶ 4/4" in r.stdout
     assert len(texts_played(fakes.say_log, play_log)) == 4

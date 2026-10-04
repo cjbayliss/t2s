@@ -1,13 +1,3 @@
-"""Playback engines: effectful shells around the pure stream state.
-
-ChainEngine guards the pure transitions with a lock, decodes cached
-files, and dispatches their typed events; MiniaudioEngine adds the
-long-lived output device, TestEngine is a headless consumer driven by
-environment (passed in, never read at import), and SubprocessEngine is
-the afplay fallback.  The CoreAudio rate probe lives here too — it is
-pure effect, queried once at startup.
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -29,6 +19,9 @@ from .pure import (
     StreamFinished,
     StreamStarted,
     StreamState,
+    engine_choice,
+    frames_to_bytes,
+    gap_bytes,
     nominal_output_rate,
     stream_next_chunk,
     stream_play,
@@ -40,13 +33,12 @@ try:
     import miniaudio
 
     HAVE_MINIAUDIO = True
-except ImportError:  # pragma: no cover - environment dependent
+except ImportError:
     miniaudio = None
     HAVE_MINIAUDIO = False
 
 
 def probe_output_rate() -> int:
-    """Raw CoreAudio query of the default output device's rate; 0 on failure."""
     try:
         import ctypes
 
@@ -67,7 +59,7 @@ def probe_output_rate() -> int:
             ctypes.POINTER(ctypes.c_uint32),
             ctypes.c_void_p,
         ]
-        out = 0x6F7574  # 'out' scope
+        out = 0x6F7574
 
         def _get(
             obj: int,
@@ -83,76 +75,54 @@ def probe_output_rate() -> int:
             )
             return int(v.value) if st == 0 else 0
 
-        dev = _get(1, 0x644F7574, 4, ctypes.c_uint32)  # 'dOut' default device
+        dev = _get(1, 0x644F7574, 4, ctypes.c_uint32)
         if dev:
-            return _get(dev, 0x6E737274, 8, ctypes.c_double)  # 'nsrt'
+            return _get(dev, 0x6E737274, 8, ctypes.c_double)
         return 0
-    except Exception:
+    except (OSError, AttributeError):
         return 0
 
 
 def detect_output_rate() -> int:
-    """Nominal sample rate of the default output device, via CoreAudio.
-
-    Cheap (one property query) and silent.  Falls back to 48000 — the
-    default on modern Macs — if the probe fails for any reason.
-    """
     return nominal_output_rate(probe_output_rate())
 
 
 def default_data_format() -> str:
-    """Synthesis format matching the output device: e.g. "LEI16@48000"."""
     return f"LEI16@{detect_output_rate()}"
 
 
 class ChainEngine:
-    """Continuous chunk-stream playback with zero-gap paragraph chaining.
-
-    Subclasses provide `_load` (file → raw s16 mono samples) and, for real
-    audio output, start a consumer that pulls from `_pull`.  The main thread
-    observes progress through `current_index()` and failures through
-    `events` (StreamCrashed).
-    """
-
     def __init__(
         self, chunk_bytes: int = 1102, gap_ms: int = 0, fail_at: int = 0
     ) -> None:
-        # ~25 ms chunks @ 22 kHz mono s16
         self._chunk_bytes = chunk_bytes
-        self._rate = SAMPLE_RATE
         self._channels = CHANNELS
         self._gap_ms = gap_ms
-        self._recompute_gap()
-        self._fail_at = fail_at  # 1-based stream start to fail (crash injection)
+        self._gap_bytes = gap_bytes(gap_ms, SAMPLE_RATE, CHANNELS)
+        self._fail_at = fail_at
         self._lock = threading.Lock()
         self.events: queue.SimpleQueue[EngineEvent] = queue.SimpleQueue()
         self._stream = StreamState()
         self._closed = False
 
-    # -- main-thread API ----------------------------------------------------
-
     def play(self, idx: int, path: Path) -> None:
-        """Start streaming paragraph idx from its cached file."""
         data = self._load(path)
         with self._lock:
             self._stream = stream_play(self._stream, idx, path, data)
 
     def prime(self, idx: int, path: Path) -> None:
-        """Decode a paragraph ahead of time so the chain can reach it."""
         try:
             data = self._load(path)
-        except Exception:
-            return  # best effort; the fallback path will retry via play()
+        except (OSError, EOFError, wave.Error, RuntimeError):
+            return
         with self._lock:
             self._stream = stream_prime(self._stream, idx, path, data)
 
     def stop_stream(self) -> None:
-        """Stop playback.  The device stays open; replay is instant."""
         with self._lock:
             self._stream = stream_stop(self._stream)
 
     def current_index(self) -> int | None:
-        """The paragraph currently streaming, or None when idle/finished."""
         with self._lock:
             return self._stream.cur
 
@@ -162,40 +132,28 @@ class ChainEngine:
             self._stream = stream_stop(self._stream)
         self._on_close()
 
-    # -- hooks for subclasses ------------------------------------------------
-
     @property
     def _paths(self) -> Mapping[int, Path]:
-        """Live paragraphs' paths (TestEngine's start log reads this)."""
         return self._stream.paths
 
     def _load(self, path: Path) -> bytes:
         raise NotImplementedError
 
     def _on_started(self, idx: int) -> None:
-        """Called (consumer thread) when streaming of idx actually begins."""
+        pass
 
     def _on_close(self) -> None:
         pass
 
-    # -- consumer thread -----------------------------------------------------
-
     def _pull(self) -> Iterator[bytes]:
-        """Yield fixed-size chunks forever (test consumers; no protocol)."""
         while not self._closed:
             chunk = self._next_chunk(self._chunk_bytes)
             yield chunk if chunk is not None else b"\x00" * self._chunk_bytes
 
     def _pull_frames(self) -> Generator[bytes, int | None, None]:
-        """Protocol generator for the miniaudio device.
-
-        The device callback sends in the number of frames it wants and we
-        must answer with exactly that many frames (s16 mono) — a short
-        answer leaves the rest of the period unfilled and playback stalls.
-        """
         frames = yield b""
         while not self._closed:
-            want = max(int(frames or 0), 1) * self._channels * 2
+            want = frames_to_bytes(max(int(frames or 0), 1), self._channels)
             chunk = self._next_chunk(want)
             if chunk is None:
                 chunk = bytes(want)
@@ -203,18 +161,11 @@ class ChainEngine:
                 chunk += bytes(want - len(chunk))
             frames = yield chunk
 
-    def _recompute_gap(self) -> None:
-        gap_frames = int(round(self._gap_ms * self._rate / 1000))
-        self._gap_bytes = gap_frames * self._channels * 2
-
     def set_stream_format(self, rate: int, channels: int) -> None:
-        """Align byte math with the actual stream (before device open)."""
-        self._rate = rate
         self._channels = channels
-        self._recompute_gap()
+        self._gap_bytes = gap_bytes(self._gap_ms, rate, channels)
 
     def _next_chunk(self, want: int) -> bytes | None:
-        """Apply one pure stream step; dispatch its events under the lock."""
         with self._lock:
             chunk, self._stream, step_events = stream_next_chunk(
                 self._stream, want, self._gap_bytes, self._fail_at
@@ -229,8 +180,6 @@ class ChainEngine:
 
 
 class MiniaudioEngine(ChainEngine):
-    """ChainEngine over a single long-lived miniaudio output device."""
-
     def __init__(self, chunk_bytes: int = 1102, gap_ms: int = 0) -> None:
         super().__init__(chunk_bytes, gap_ms)
         self._device: Any = None
@@ -246,8 +195,6 @@ class MiniaudioEngine(ChainEngine):
     def _ensure_device(self, path: Path) -> None:
         if self._device is not None:
             return
-        # Open the device with the cached files' actual rate/channels: the
-        # device then runs natively and no resampling happens anywhere.
         with wave.open(str(path), "rb") as w:
             rate, channels = w.getframerate(), w.getnchannels()
         self.set_stream_format(rate, channels)
@@ -255,10 +202,10 @@ class MiniaudioEngine(ChainEngine):
             output_format=miniaudio.SampleFormat.SIGNED16,
             nchannels=channels,
             sample_rate=rate,
-            buffersize_msec=60,  # snappier pause than the 200 ms default
+            buffersize_msec=60,
         )
         pull = self._pull_frames()
-        next(pull)  # prime: advance to the first yield before start()
+        next(pull)
         self._device.start(pull)
 
     def _on_close(self) -> None:
@@ -268,16 +215,6 @@ class MiniaudioEngine(ChainEngine):
 
 
 class TestEngine(ChainEngine):
-    """Headless ChainEngine for subprocess tests.
-
-    Consumes its own chunk stream on a drain thread at a configurable rate.
-    Environment (passed in by the caller, never read from os.environ here):
-        T2S_TEST_PLAY_LOG      append played paths (started streams)
-        T2S_TEST_PLAY_DELAY    seconds per chunk (default 0.05)
-        T2S_TEST_PLAY_FAIL_AT  1-based stream start that fails instead of
-                               playing (simulates a device error)
-    """
-
     def __init__(self, gap_ms: int = 0, env: Mapping[str, str] | None = None) -> None:
         env_vars = env if env is not None else {}
         super().__init__(
@@ -310,11 +247,9 @@ class TestEngine(ChainEngine):
 
 
 class SubprocessEngine:
-    """afplay fallback: one external process per paragraph (with gaps)."""
-
     def __init__(self, play_cmd: Sequence[str], gap_ms: int = 0) -> None:
         self._cmd = play_cmd
-        self._gap_ms = gap_ms  # not applicable: gaps live inside the stream
+        self._gap_ms = gap_ms
         self.events: queue.SimpleQueue[EngineEvent] = queue.SimpleQueue()
         self._proc: subprocess.Popen[bytes] | None = None
         self._idx: int | None = None
@@ -332,10 +267,9 @@ class SubprocessEngine:
         ).start()
 
     def _watch(self, idx: int, proc: subprocess.Popen[bytes]) -> None:
-        """Push the exit event for one spawned player process."""
         rc = proc.wait()
         if self._reported:
-            return  # user-initiated stop (or superseded by a newer play)
+            return
         if rc == 0:
             self.events.put(StreamFinished(idx, False))
         else:
@@ -346,7 +280,7 @@ class SubprocessEngine:
     def stop_stream(self) -> None:
         p = self._proc
         if p is not None and p.poll() is None:
-            self._reported = True  # user-initiated stop: never a "crash"
+            self._reported = True
             with contextlib.suppress(ProcessLookupError):
                 p.terminate()
             try:
@@ -356,7 +290,6 @@ class SubprocessEngine:
         self._idx = None
 
     def current_index(self) -> int | None:
-        """The paragraph whose player process is still running, if any."""
         p = self._proc
         if p is None or self._idx is None:
             return None
@@ -375,21 +308,21 @@ def make_engine(
     gap_ms: int = 0,
     env: Mapping[str, str] | None = None,
 ) -> ChainEngine | SubprocessEngine:
-    if player == "afplay":
-        return SubprocessEngine(play_cmd, gap_ms)
-    if player == "test":
-        return TestEngine(gap_ms, env)
-    if HAVE_MINIAUDIO:
-        return MiniaudioEngine(gap_ms=gap_ms)
-    if player == "miniaudio":
+    choice = engine_choice(player, HAVE_MINIAUDIO)
+    if choice == "missing-miniaudio":
         print(
             "t2s: --player miniaudio but the 'miniaudio' package is not installed",
             file=sys.stderr,
         )
         raise SystemExit(2)
-    print(
-        "t2s: miniaudio is not installed — falling back to afplay "
-        "(pip install miniaudio for gapless playback)",
-        file=sys.stderr,
-    )
-    return SubprocessEngine(play_cmd)
+    if choice == "afplay-fallback":
+        print(
+            "t2s: miniaudio is not installed — falling back to afplay "
+            "(pip install miniaudio for gapless playback)",
+            file=sys.stderr,
+        )
+    if choice == "miniaudio":
+        return MiniaudioEngine(gap_ms=gap_ms)
+    if choice == "test":
+        return TestEngine(gap_ms, env)
+    return SubprocessEngine(play_cmd, gap_ms)
