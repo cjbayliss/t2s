@@ -119,6 +119,69 @@ def test_prime_missing_file_is_best_effort(tmp_path: Path):
     assert engine.current_index() is None
 
 
+def test_gap_inserts_silence_between_paragraphs(tmp_path: Path):
+    """--gap: exact silence between chained paragraphs, none elsewhere."""
+    from t2s import SAMPLE_RATE
+
+    first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 3)   # 3 frames
+    second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)  # 2 frames
+    engine = RawEngine(chunk_bytes=2, gap_ms=2)  # -> round(44.1)=44 frames
+    gap_bytes = round(2 * SAMPLE_RATE / 1000) * 2
+    assert gap_bytes == 88
+    engine.play(0, first)
+    engine.prime(1, second)
+
+    gen = engine._pull()
+    chunks = [next(gen) for _ in range(60)]
+    joined = b"".join(chunks)
+
+    body = (b"\x01\x02" * 3) + bytes(gap_bytes) + (b"\x03\x04" * 2)
+    assert joined.startswith(body)
+    # everything after ¶2 is idle silence too
+    assert joined[len(body):].strip(b"\x00") == b""
+    kinds = [e[0] for e in events(engine)]
+    assert kinds == ["finished", "chained", "finished"]
+
+
+def test_zero_gap_is_the_default(tmp_path: Path):
+    first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 3)
+    second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
+    engine = RawEngine(chunk_bytes=2)  # gap_ms defaults to 0
+    engine.play(0, first)
+    engine.prime(1, second)
+
+    chunks = drain(engine, 5)
+    assert b"".join(chunks) == (b"\x01\x02" * 3) + (b"\x03\x04" * 2)
+
+
+def test_explicit_play_has_no_leading_gap(tmp_path: Path):
+    data = make_wav(tmp_path, "a.raw", b"\x01\x02" * 4)
+    engine = RawEngine(chunk_bytes=2, gap_ms=500)
+    engine.play(0, data)
+    chunks = drain(engine, 2)
+    assert chunks == [b"\x01\x02", b"\x01\x02"]  # starts immediately
+
+
+def test_gap_across_request_boundaries(tmp_path: Path):
+    """A gap larger than one device request must still be exact."""
+    from t2s import SAMPLE_RATE
+
+    first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 2)
+    second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
+    engine = RawEngine(chunk_bytes=2, gap_ms=10)  # ~220 frames = 441 bytes
+    gap_bytes = round(10 * SAMPLE_RATE / 1000) * 2
+    engine.play(0, first)
+    engine.prime(1, second)
+
+    gen = engine._pull_frames()
+    next(gen)
+    # One request covering ¶1 + the whole gap + ¶2, plus silence padding:
+    got = gen.send(230)  # 230 frames = 460 bytes
+    expected = (b"\x01\x02" * 2) + bytes(gap_bytes) + (b"\x03\x04" * 2)
+    assert got.startswith(expected)
+    assert got[len(expected):].strip(b"\x00") == b""
+
+
 def test_pull_frames_protocol(tmp_path: Path):
     """The device sends a frame count and must get EXACTLY that many
     frames back — even when a request spans a paragraph boundary, and

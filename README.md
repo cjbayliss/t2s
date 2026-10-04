@@ -27,9 +27,9 @@ playback (`--ahead`, default 3).
 Playback is **in-process**: the default engine decodes the cached files
 into memory and streams them through a single long-lived miniaudio device.
 When a paragraph's samples run out, the stream chains straight into the
-next preloaded paragraph's samples — **zero silence between paragraphs**,
-no process spawning, no device re-initialization. Pause/replay just stops
-and restarts the stream.
+next preloaded paragraph's samples — **zero silence between paragraphs**
+(or `--gap MS` milliseconds of it, your choice), no process spawning, no
+device re-initialization. Pause/replay just stops and restarts the stream.
 
 The cache (`~/Library/Caches/t2s`, one file per paragraph, keyed by text +
 voice + rate + format) persists between runs: re-reading or resuming a
@@ -85,6 +85,8 @@ file                  text file to read ('-' or omitted: standard input)
                       boundaries
 --ahead N             paragraphs to synthesize ahead of playback (default 3;
                       raise for slow "premium" voices)
+--gap MS              silence between paragraphs in milliseconds
+                      (default: 0 — seamless chaining)
 --cache-dir PATH      audio cache directory (default: ~/Library/Caches/t2s)
 --cache-limit-mb MB   prune cache when larger than this (default 256)
 --player ENGINE       auto (default) | miniaudio | afplay | test
