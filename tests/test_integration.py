@@ -41,12 +41,12 @@ def test_reads_all_paragraphs_in_order(fakes: Fakes, tmp_path: Path) -> None:
     env, play_log = engine_log_env(tmp_path)
     result, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
     assert result.returncode == 0, result.stderr
-    for marker in ("¶ 1/3", "¶ 2/3", "¶ 3/3"):
+    for marker in ("1/3", "2/3", "3/3"):
         assert marker in result.stdout
     assert "done" in result.stdout
     assert result.stderr == ""
     assert texts_played(fakes.say_log, play_log) == PARAGRAPHS
-    assert result.stdout.count("── ¶") >= 3
+    assert result.stdout.count("- ") >= 3
 
 
 def test_afplay_fallback_smoke(fakes: Fakes, tmp_path: Path) -> None:
@@ -65,7 +65,7 @@ def test_stdin_pipeline(fakes: Fakes, tmp_path: Path) -> None:
         input=b"Piped in.\n\nSecond piped.\n",
     )
     assert result.returncode == 0, result.stderr
-    assert "¶ 1/2" in result.stdout and "¶ 2/2" in result.stdout
+    assert "1/2" in result.stdout and "2/2" in result.stdout
     assert texts_played(fakes.say_log, play_log) == ["Piped in.", "Second piped."]
 
 
@@ -75,8 +75,8 @@ def test_start_flag_skips_earlier_paragraphs(fakes: Fakes, tmp_path: Path) -> No
         fakes, tmp_path, DOC, "--start", "2", "--player", "test", env_extra=env
     )
     assert result.returncode == 0, result.stderr
-    assert "¶ 2/3" in result.stdout
-    assert "¶ 1/3" not in result.stdout
+    assert "2/3" in result.stdout
+    assert "1/3" not in result.stdout
     assert texts_played(fakes.say_log, play_log) == PARAGRAPHS[1:]
 
 
@@ -110,7 +110,7 @@ def test_synthesis_failure_skips_paragraph(fakes: Fakes, tmp_path: Path) -> None
     env = dict(env, FAKE_SAY_FAIL_TEXT="CRASHER")
     result, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
     assert result.returncode == 0, result.stderr
-    assert "¶ 1/3" in result.stdout and "¶ 3/3" in result.stdout
+    assert "1/3" in result.stdout and "3/3" in result.stdout
     assert "could not render" in result.stderr
     assert "continuing with next paragraph" in result.stderr
     assert texts_played(fakes.say_log, play_log) == [PARAGRAPHS[0], PARAGRAPHS[2]]
@@ -200,7 +200,7 @@ def test_width_flag(fakes: Fakes, tmp_path: Path) -> None:
     out_lines = [
         line
         for line in result.stdout.splitlines()
-        if line and "¶" not in line and "done" not in line
+        if line and not line.startswith("- ") and "done" not in line
     ]
     assert out_lines
     assert all(len(line) <= 20 for line in out_lines)
@@ -217,7 +217,7 @@ def test_long_paragraph_display(fakes: Fakes, tmp_path: Path) -> None:
     display = [
         line
         for line in result.stdout.splitlines()
-        if line and "¶" not in line and "done" not in line
+        if line and not line.startswith("- ") and "done" not in line
     ]
     assert display
     assert all(len(line) <= 72 for line in display)
@@ -242,6 +242,6 @@ def test_split_long_flag(fakes: Fakes, tmp_path: Path) -> None:
         env_extra=env,
     )
     assert result.returncode == 0, result.stderr
-    assert "¶ 1/4" in result.stdout
-    assert "¶ 4/4" in result.stdout
+    assert "1/4" in result.stdout
+    assert "4/4" in result.stdout
     assert len(texts_played(fakes.say_log, play_log)) == 4

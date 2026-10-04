@@ -331,22 +331,20 @@ def handle_key(
 ) -> tuple[AppState, Effects]:
     if key in ("q", "Q", "\x03"):
         return replace(state, running=False), (
-            Note(f"· stopped at ¶ {state.index + 1}/{state.n_paragraphs}"),
+            Note(f"stopped at {state.index + 1}/{state.n_paragraphs}"),
         )
     if key == " ":
         if state.mode == "playing":
             if engine_index is not None:
                 return replace(state, mode="paused"), (
                     StopStream(),
-                    Note(
-                        "⏸ paused — space: replay paragraph · n/p: paragraph · q: quit"
-                    ),
+                    Note("paused - space: replay paragraph, n/p: paragraph, q: quit"),
                 )
             return state, ()
         if state.mode == "paused":
             return state, (
                 ClearFailure(state.index),
-                TryPlay(state.index, "· resumed"),
+                TryPlay(state.index, "resumed"),
             )
         return state, ()
     if key in ("n", "N", "p", "P"):
@@ -354,7 +352,7 @@ def handle_key(
         target = state.index + delta
         if not 0 <= target < state.n_paragraphs:
             edge = "last" if delta > 0 else "first"
-            return state, (Note(f"· already at {edge} paragraph"),)
+            return state, (Note(f"already at {edge} paragraph"),)
         return state, (TryPlay(target),)
     return state, ()
 
@@ -370,13 +368,13 @@ def handle_engine_event(
             if state.interactive:
                 return replace(state, mode="paused", had_errors=True), (
                     Warn(msg),
-                    Note("⏸ device error — space: replay · n/p: skip · q: quit"),
+                    Note("device error - space: replay, n/p: skip, q: quit"),
                 )
             next_state, effects = advance(
                 replace(state, mode="stopped", had_errors=True), after_error=True
             )
             return next_state, (
-                Warn(msg + " — continuing with next paragraph"),
+                Warn(msg + " - continuing with next paragraph"),
                 *effects,
             )
         case StreamFinished(index, chained):
@@ -431,8 +429,8 @@ def build_say_cmd(
 
 def done_message(count: int, had_errors: bool) -> str:
     if had_errors:
-        return "✓ done (with errors)"
-    return f"✓ done — {count} paragraph{'s' if count != 1 else ''}"
+        return "done (with errors)"
+    return f"done - {count} paragraph{'s' if count != 1 else ''}"
 
 
 def prefetch_window(cursor: int, ahead: int, count: int) -> tuple[int, ...]:

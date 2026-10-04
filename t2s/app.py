@@ -232,9 +232,9 @@ def try_play(app: App, index: int, note_text: str | None = None) -> PlayOutcome:
             msg = f"! could not render paragraph: {detail}"
             if app.key_source is not None:
                 emit_warn(app, msg)
-                emit_note(app, "space: retry · n/p: paragraph · q: quit")
+                emit_note(app, "space: retry, n/p: paragraph, q: quit")
                 return "paused"
-            emit_warn(app, msg + " — continuing with next paragraph")
+            emit_warn(app, msg + " - continuing with next paragraph")
             return "failed"
         case path:
             engine_play(app.engine, index, path)
@@ -268,7 +268,7 @@ def run(app: App) -> int:
         while state.running:
             state = tick(app, state)
     except KeyboardInterrupt:
-        emit_note(app, "· interrupted")
+        emit_note(app, "interrupted")
     finally:
         restore_terminal(app)
         engine_stop_stream(app.engine)
@@ -326,10 +326,10 @@ def drain_events(app: App, state: AppState) -> AppState:
 
 
 def show_paragraph(app: App, index: int, note_text: str | None = None) -> None:
-    header = f"── ¶ {index + 1}/{len(app.paragraphs)}"
+    header = f"- {index + 1}/{len(app.paragraphs)}"
     if note_text:
         header += f" {note_text}"
-    header += " ──"
+    header += " -"
     print(dim(app, header))
     for line, _ in wrap_offsets(app.paragraphs[index], app.width):
         print(line)

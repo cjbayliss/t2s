@@ -44,7 +44,7 @@ t2s --gap 300 notes.txt          # 300 ms of silence between paragraphs
 
 ### Keys
 
-While reading, t2s prints a dim header (`── ¶ 3/57 ──`) followed by the
+While reading, t2s prints a dim header (`- 3/57 -`) followed by the
 current paragraph, wrapped to the display width. Keys are read from the
 terminal (from `/dev/tty` if stdin is piped):
 
