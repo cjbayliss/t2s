@@ -7,13 +7,12 @@ import sys
 import threading
 import time
 import wave
-from collections.abc import Generator, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 from .pure import (
-    CHANNELS,
-    SAMPLE_RATE,
     EngineEvent,
     StreamCrashed,
     StreamFinished,
@@ -29,21 +28,11 @@ from .pure import (
     stream_stop,
 )
 
-try:
-    import miniaudio
-
-    HAVE_MINIAUDIO = True
-except ImportError:
-    miniaudio = None
-    HAVE_MINIAUDIO = False
-
-
-_PROP_DEFAULT_OUTPUT_DEVICE = 0x644F7574
-_PROP_NOMINAL_SAMPLE_RATE = 0x6E737274
-_SCOPE_OUTPUT = 0x6F7574
-
 
 def probe_output_rate() -> int:
+    prop_default_output_device = 0x644F7574
+    prop_nominal_sample_rate = 0x6E737274
+    scope_output = 0x6F7574
     try:
         import ctypes
 
@@ -73,7 +62,7 @@ def probe_output_rate() -> int:
             size: int,
             ctype: type[ctypes.c_uint32] | type[ctypes.c_double],
         ) -> int:
-            address = _PropertyAddress(selector, _SCOPE_OUTPUT, 0)
+            address = _PropertyAddress(selector, scope_output, 0)
             data_size = ctypes.c_uint32(size)
             value = ctype()
             status = core_audio.AudioObjectGetPropertyData(
@@ -86,10 +75,10 @@ def probe_output_rate() -> int:
             )
             return int(value.value) if status == 0 else 0
 
-        device_id = _get_property(1, _PROP_DEFAULT_OUTPUT_DEVICE, 4, ctypes.c_uint32)
+        device_id = _get_property(1, prop_default_output_device, 4, ctypes.c_uint32)
         if device_id:
             return _get_property(
-                device_id, _PROP_NOMINAL_SAMPLE_RATE, 8, ctypes.c_double
+                device_id, prop_nominal_sample_rate, 8, ctypes.c_double
             )
         return 0
     except (OSError, AttributeError):
@@ -104,217 +93,340 @@ def default_data_format() -> str:
     return f"LEI16@{detect_output_rate()}"
 
 
-class ChainEngine:
-    def __init__(
-        self, chunk_bytes: int = 1102, gap_ms: int = 0, fail_at: int = 0
-    ) -> None:
-        self._chunk_bytes = chunk_bytes
-        self._channels = CHANNELS
-        self._gap_ms = gap_ms
-        self._gap_bytes = gap_bytes(gap_ms, SAMPLE_RATE, CHANNELS)
-        self._fail_at = fail_at
-        self._lock = threading.Lock()
-        self.events: queue.SimpleQueue[EngineEvent] = queue.SimpleQueue()
-        self._stream = StreamState()
-        self._closed = False
+@dataclass(frozen=True)
+class AudioLibrary:
+    module: Any
 
-    def play(self, index: int, path: Path) -> None:
-        data = self._load(path)
-        with self._lock:
-            self._stream = stream_play(self._stream, index, path, data)
 
-    def prime(self, index: int, path: Path) -> None:
+def load_audio_library() -> AudioLibrary | None:
+    try:
+        import miniaudio
+    except ImportError:
+        return None
+    return AudioLibrary(module=miniaudio)
+
+
+def load_miniaudio(audio: AudioLibrary, path: Path) -> bytes:
+    decoded = audio.module.wav_read_file_s16(str(path))
+    return cast(bytes, decoded.samples.tobytes())
+
+
+def read_wave(path: Path) -> bytes:
+    with wave.open(str(path), "rb") as wav:
+        return wav.readframes(wav.getnframes())
+
+
+def load_wav(engine: StreamEngine, path: Path) -> bytes:
+    if engine.audio is not None:
+        return load_miniaudio(engine.audio, path)
+    return read_wave(path)
+
+
+@dataclass
+class StreamCell:
+    stream: StreamState
+    closed: bool
+    channels: int
+    gap_size_bytes: int
+    device: Any
+    drain_thread: threading.Thread | None
+
+
+@dataclass(frozen=True)
+class StreamEngine:
+    lock: threading.Lock
+    events: queue.SimpleQueue[EngineEvent]
+    chunk_bytes: int
+    gap_ms: int
+    fail_at: int
+    delay: float
+    log_path: str | None
+    drain: bool
+    audio: AudioLibrary | None
+    cell: StreamCell
+    load: Callable[[StreamEngine, Path], bytes] = load_wav
+
+
+def make_stream_engine(
+    *,
+    load: Callable[[StreamEngine, Path], bytes] = load_wav,
+    chunk_bytes: int = 1102,
+    gap_ms: int = 0,
+    fail_at: int = 0,
+    rate: int = 22050,
+    channels: int = 1,
+    delay: float = 0.0,
+    log_path: str | None = None,
+    drain: bool = False,
+    audio: AudioLibrary | None = None,
+) -> StreamEngine:
+    return StreamEngine(
+        lock=threading.Lock(),
+        events=queue.SimpleQueue(),
+        chunk_bytes=chunk_bytes,
+        gap_ms=gap_ms,
+        fail_at=fail_at,
+        delay=delay,
+        log_path=log_path,
+        drain=drain,
+        audio=audio,
+        cell=StreamCell(
+            stream=StreamState(),
+            closed=False,
+            channels=channels,
+            gap_size_bytes=gap_bytes(gap_ms, rate, channels),
+            device=None,
+            drain_thread=None,
+        ),
+        load=load,
+    )
+
+
+def set_stream_format(engine: StreamEngine, rate: int, channels: int) -> None:
+    engine.cell.channels = channels
+    engine.cell.gap_size_bytes = gap_bytes(engine.gap_ms, rate, channels)
+
+
+def ensure_device(engine: StreamEngine, path: Path) -> None:
+    audio = engine.audio
+    if audio is None or engine.cell.device is not None:
+        return
+    with wave.open(str(path), "rb") as wav:
+        rate, channels = wav.getframerate(), wav.getnchannels()
+    set_stream_format(engine, rate, channels)
+    module = audio.module
+    device = module.PlaybackDevice(
+        output_format=module.SampleFormat.SIGNED16,
+        nchannels=channels,
+        sample_rate=rate,
+        buffersize_msec=60,
+    )
+    pull = pull_frames(engine)
+    next(pull)
+    device.start(pull)
+    engine.cell.device = device
+
+
+def close_device(engine: StreamEngine) -> None:
+    device = engine.cell.device
+    if device is not None:
+        device.close()
+        engine.cell.device = None
+
+
+def log_stream_started(engine: StreamEngine, index: int) -> None:
+    if engine.log_path is None:
+        return
+    with open(engine.log_path, "a") as log_file:
+        log_file.write(f"{engine.cell.stream.paths[index]}\n")
+
+
+def next_chunk(engine: StreamEngine, want_bytes: int) -> bytes | None:
+    with engine.lock:
+        chunk, engine.cell.stream, step_events = stream_next_chunk(
+            engine.cell.stream, want_bytes, engine.cell.gap_size_bytes, engine.fail_at
+        )
+        for event in step_events:
+            match event:
+                case StreamStarted():
+                    log_stream_started(engine, event.index)
+                case _:
+                    engine.events.put(event)
+    return chunk
+
+
+def pull(engine: StreamEngine) -> Iterator[bytes]:
+    while not engine.cell.closed:
+        chunk = next_chunk(engine, engine.chunk_bytes)
+        yield chunk if chunk is not None else b"\x00" * engine.chunk_bytes
+
+
+def pull_frames(engine: StreamEngine) -> Generator[bytes, int | None, None]:
+    frames = yield b""
+    while not engine.cell.closed:
+        want_bytes = frames_to_bytes(max(int(frames or 0), 1), engine.cell.channels)
+        chunk = next_chunk(engine, want_bytes)
+        if chunk is None:
+            chunk = bytes(want_bytes)
+        elif len(chunk) < want_bytes:
+            chunk += bytes(want_bytes - len(chunk))
+        frames = yield chunk
+
+
+def drain_loop(engine: StreamEngine) -> None:
+    for _ in pull(engine):
+        if engine.delay:
+            time.sleep(engine.delay)
+
+
+def start_drain(engine: StreamEngine) -> None:
+    cell = engine.cell
+    if cell.drain_thread is not None and cell.drain_thread.is_alive():
+        return
+    cell.drain_thread = threading.Thread(target=drain_loop, args=(engine,), daemon=True)
+    cell.drain_thread.start()
+
+
+def stream_engine_play(engine: StreamEngine, index: int, path: Path) -> None:
+    ensure_device(engine, path)
+    data = engine.load(engine, path)
+    with engine.lock:
+        engine.cell.stream = stream_play(engine.cell.stream, index, path, data)
+    if engine.drain:
+        start_drain(engine)
+
+
+def stream_engine_prime(engine: StreamEngine, index: int, path: Path) -> None:
+    try:
+        data = engine.load(engine, path)
+    except (OSError, EOFError, wave.Error, RuntimeError):
+        return
+    with engine.lock:
+        engine.cell.stream = stream_prime(engine.cell.stream, index, path, data)
+
+
+def stream_engine_stop_stream(engine: StreamEngine) -> None:
+    with engine.lock:
+        engine.cell.stream = stream_stop(engine.cell.stream)
+
+
+def stream_engine_current_index(engine: StreamEngine) -> int | None:
+    with engine.lock:
+        return engine.cell.stream.current_index
+
+
+def stream_engine_close(engine: StreamEngine) -> None:
+    with engine.lock:
+        engine.cell.closed = True
+        engine.cell.stream = stream_stop(engine.cell.stream)
+    close_device(engine)
+
+
+@dataclass
+class ProcCell:
+    proc: subprocess.Popen[bytes] | None
+    current_index: int | None
+    suppress_report: bool
+
+
+@dataclass(frozen=True)
+class ProcEngine:
+    events: queue.SimpleQueue[EngineEvent]
+    cmd: tuple[str, ...]
+    cell: ProcCell
+
+
+def make_proc_engine(play_cmd: Sequence[str]) -> ProcEngine:
+    return ProcEngine(
+        events=queue.SimpleQueue(),
+        cmd=tuple(play_cmd),
+        cell=ProcCell(proc=None, current_index=None, suppress_report=True),
+    )
+
+
+def proc_engine_play(engine: ProcEngine, index: int, path: Path) -> None:
+    proc_engine_stop_stream(engine)
+    proc = subprocess.Popen(
+        (*engine.cmd, str(path)), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+    )
+    engine.cell.proc = proc
+    engine.cell.current_index = index
+    engine.cell.suppress_report = False
+    threading.Thread(target=watch_proc, args=(engine, index, proc), daemon=True).start()
+
+
+def watch_proc(engine: ProcEngine, index: int, proc: subprocess.Popen[bytes]) -> None:
+    exit_code = proc.wait()
+    if engine.cell.suppress_report:
+        return
+    if exit_code == 0:
+        engine.events.put(StreamFinished(index, False))
+    else:
+        stderr = proc.stderr.read() if proc.stderr is not None else b""
+        tail = " ".join(stderr.decode("utf-8", "replace").split())[:200]
+        engine.events.put(
+            StreamCrashed(index, f"player exited with code {exit_code}: {tail}")
+        )
+
+
+def proc_engine_stop_stream(engine: ProcEngine) -> None:
+    proc = engine.cell.proc
+    if proc is not None and proc.poll() is None:
+        engine.cell.suppress_report = True
+        with contextlib.suppress(ProcessLookupError):
+            proc.terminate()
         try:
-            data = self._load(path)
-        except (OSError, EOFError, wave.Error, RuntimeError):
-            return
-        with self._lock:
-            self._stream = stream_prime(self._stream, index, path, data)
-
-    def stop_stream(self) -> None:
-        with self._lock:
-            self._stream = stream_stop(self._stream)
-
-    def current_index(self) -> int | None:
-        with self._lock:
-            return self._stream.current_index
-
-    def close(self) -> None:
-        with self._lock:
-            self._closed = True
-            self._stream = stream_stop(self._stream)
-        self._on_close()
-
-    @property
-    def _paths(self) -> Mapping[int, Path]:
-        return self._stream.paths
-
-    def _load(self, path: Path) -> bytes:
-        raise NotImplementedError
-
-    def _on_started(self, index: int) -> None:
-        pass
-
-    def _on_close(self) -> None:
-        pass
-
-    def _pull(self) -> Iterator[bytes]:
-        while not self._closed:
-            chunk = self._next_chunk(self._chunk_bytes)
-            yield chunk if chunk is not None else b"\x00" * self._chunk_bytes
-
-    def _pull_frames(self) -> Generator[bytes, int | None, None]:
-        frames = yield b""
-        while not self._closed:
-            want_bytes = frames_to_bytes(max(int(frames or 0), 1), self._channels)
-            chunk = self._next_chunk(want_bytes)
-            if chunk is None:
-                chunk = bytes(want_bytes)
-            elif len(chunk) < want_bytes:
-                chunk += bytes(want_bytes - len(chunk))
-            frames = yield chunk
-
-    def set_stream_format(self, rate: int, channels: int) -> None:
-        self._channels = channels
-        self._gap_bytes = gap_bytes(self._gap_ms, rate, channels)
-
-    def _next_chunk(self, want_bytes: int) -> bytes | None:
-        with self._lock:
-            chunk, self._stream, step_events = stream_next_chunk(
-                self._stream, want_bytes, self._gap_bytes, self._fail_at
-            )
-            for event in step_events:
-                match event:
-                    case StreamStarted():
-                        self._on_started(event.index)
-                    case _:
-                        self.events.put(event)
-        return chunk
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    engine.cell.current_index = None
 
 
-class MiniaudioEngine(ChainEngine):
-    def __init__(self, chunk_bytes: int = 1102, gap_ms: int = 0) -> None:
-        super().__init__(chunk_bytes, gap_ms)
-        self._device: Any = None
-
-    def _load(self, path: Path) -> bytes:
-        decoded = miniaudio.wav_read_file_s16(str(path))
-        return cast(bytes, decoded.samples.tobytes())
-
-    def play(self, index: int, path: Path) -> None:
-        self._ensure_device(path)
-        super().play(index, path)
-
-    def _ensure_device(self, path: Path) -> None:
-        if self._device is not None:
-            return
-        with wave.open(str(path), "rb") as wav:
-            rate, channels = wav.getframerate(), wav.getnchannels()
-        self.set_stream_format(rate, channels)
-        self._device = miniaudio.PlaybackDevice(
-            output_format=miniaudio.SampleFormat.SIGNED16,
-            nchannels=channels,
-            sample_rate=rate,
-            buffersize_msec=60,
-        )
-        pull = self._pull_frames()
-        next(pull)
-        self._device.start(pull)
-
-    def _on_close(self) -> None:
-        if self._device is not None:
-            self._device.close()
-            self._device = None
+def proc_engine_current_index(engine: ProcEngine) -> int | None:
+    proc = engine.cell.proc
+    if proc is None or engine.cell.current_index is None:
+        return None
+    return engine.cell.current_index if proc.poll() is None else None
 
 
-class TestEngine(ChainEngine):
-    def __init__(self, gap_ms: int = 0, env: Mapping[str, str] | None = None) -> None:
-        env_vars = env if env is not None else {}
-        super().__init__(
-            gap_ms=gap_ms,
-            fail_at=int(env_vars.get("T2S_TEST_PLAY_FAIL_AT", "0") or 0),
-        )
-        self._delay = float(env_vars.get("T2S_TEST_PLAY_DELAY", "0.05") or 0)
-        self._log_path = env_vars.get("T2S_TEST_PLAY_LOG")
-        self._drain_thread: threading.Thread | None = None
-
-    def _load(self, path: Path) -> bytes:
-        with wave.open(str(path), "rb") as wav:
-            return wav.readframes(wav.getnframes())
-
-    def _on_started(self, index: int) -> None:
-        if self._log_path:
-            with open(self._log_path, "a") as log_file:
-                log_file.write(f"{self._paths[index]}\n")
-
-    def play(self, index: int, path: Path) -> None:
-        super().play(index, path)
-        if self._drain_thread is None or not self._drain_thread.is_alive():
-            self._drain_thread = threading.Thread(target=self._drain_loop, daemon=True)
-            self._drain_thread.start()
-
-    def _drain_loop(self) -> None:
-        for _ in self._pull():
-            if self._delay:
-                time.sleep(self._delay)
+def proc_engine_close(engine: ProcEngine) -> None:
+    proc_engine_stop_stream(engine)
 
 
-class SubprocessEngine:
-    def __init__(self, play_cmd: Sequence[str], gap_ms: int = 0) -> None:
-        self._cmd = play_cmd
-        self._gap_ms = gap_ms
-        self.events: queue.SimpleQueue[EngineEvent] = queue.SimpleQueue()
-        self._proc: subprocess.Popen[bytes] | None = None
-        self._current_index: int | None = None
-        self._suppress_report = True
+def make_test_engine(
+    gap_ms: int = 0, env: Mapping[str, str] | None = None
+) -> StreamEngine:
+    env_vars = env if env is not None else {}
+    return make_stream_engine(
+        gap_ms=gap_ms,
+        fail_at=int(env_vars.get("T2S_TEST_PLAY_FAIL_AT", "0") or 0),
+        delay=float(env_vars.get("T2S_TEST_PLAY_DELAY", "0.05") or 0),
+        log_path=env_vars.get("T2S_TEST_PLAY_LOG"),
+        drain=True,
+    )
 
-    def play(self, index: int, path: Path) -> None:
-        self.stop_stream()
-        self._proc = subprocess.Popen(
-            (*self._cmd, str(path)), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-        )
-        self._current_index = index
-        self._suppress_report = False
-        threading.Thread(
-            target=self._watch, args=(index, self._proc), daemon=True
-        ).start()
 
-    def _watch(self, index: int, proc: subprocess.Popen[bytes]) -> None:
-        exit_code = proc.wait()
-        if self._suppress_report:
-            return
-        if exit_code == 0:
-            self.events.put(StreamFinished(index, False))
-        else:
-            stderr = proc.stderr.read() if proc.stderr is not None else b""
-            tail = " ".join(stderr.decode("utf-8", "replace").split())[:200]
-            self.events.put(
-                StreamCrashed(index, f"player exited with code {exit_code}: {tail}")
-            )
+Engine = StreamEngine | ProcEngine
 
-    def stop_stream(self) -> None:
-        proc = self._proc
-        if proc is not None and proc.poll() is None:
-            self._suppress_report = True
-            with contextlib.suppress(ProcessLookupError):
-                proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        self._current_index = None
 
-    def current_index(self) -> int | None:
-        proc = self._proc
-        if proc is None or self._current_index is None:
-            return None
-        return self._current_index if proc.poll() is None else None
+def engine_play(engine: Engine, index: int, path: Path) -> None:
+    match engine:
+        case StreamEngine():
+            stream_engine_play(engine, index, path)
+        case ProcEngine():
+            proc_engine_play(engine, index, path)
 
-    def prime(self, index: int, path: Path) -> None:
-        pass
 
-    def close(self) -> None:
-        self.stop_stream()
+def engine_prime(engine: Engine, index: int, path: Path) -> None:
+    match engine:
+        case StreamEngine():
+            stream_engine_prime(engine, index, path)
+        case ProcEngine():
+            pass
+
+
+def engine_stop_stream(engine: Engine) -> None:
+    match engine:
+        case StreamEngine():
+            stream_engine_stop_stream(engine)
+        case ProcEngine():
+            proc_engine_stop_stream(engine)
+
+
+def engine_current_index(engine: Engine) -> int | None:
+    match engine:
+        case StreamEngine():
+            return stream_engine_current_index(engine)
+        case ProcEngine():
+            return proc_engine_current_index(engine)
+
+
+def engine_close(engine: Engine) -> None:
+    match engine:
+        case StreamEngine():
+            stream_engine_close(engine)
+        case ProcEngine():
+            proc_engine_close(engine)
 
 
 def make_engine(
@@ -322,8 +434,9 @@ def make_engine(
     play_cmd: Sequence[str],
     gap_ms: int = 0,
     env: Mapping[str, str] | None = None,
-) -> ChainEngine | SubprocessEngine:
-    choice = engine_choice(player, HAVE_MINIAUDIO)
+    audio: AudioLibrary | None = None,
+) -> Engine:
+    choice = engine_choice(player, audio is not None)
     if choice == "missing-miniaudio":
         print(
             "t2s: --player miniaudio but the 'miniaudio' package is not installed",
@@ -337,7 +450,7 @@ def make_engine(
             file=sys.stderr,
         )
     if choice == "miniaudio":
-        return MiniaudioEngine(gap_ms=gap_ms)
+        return make_stream_engine(gap_ms=gap_ms, audio=audio)
     if choice == "test":
-        return TestEngine(gap_ms, env)
-    return SubprocessEngine(play_cmd, gap_ms)
+        return make_test_engine(gap_ms, env)
+    return make_proc_engine(play_cmd)

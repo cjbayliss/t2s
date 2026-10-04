@@ -10,10 +10,6 @@ from operator import attrgetter
 from pathlib import Path
 from typing import Literal
 
-SAMPLE_RATE = 22050
-CHANNELS = 1
-DEFAULT_DATA_FORMAT = "LEI16@22050"
-
 
 def nominal_output_rate(reported_rate: int) -> int:
     return reported_rate if 8000 <= reported_rate <= 384000 else 48000
@@ -27,16 +23,15 @@ def gap_bytes(gap_ms: int, rate: int, channels: int) -> int:
     return frames_to_bytes(int(round(gap_ms * rate / 1000)), channels)
 
 
-_SENTENCE_RE = re.compile(r"[^.!?…]*[.!?…]+[\"'”’)\]]*(?:\s+|$)|[^.!?…]+$")
-
-
 def normalize(text: str) -> str:
     return " ".join(text.split())
 
 
 def split_sentences(text: str) -> tuple[str, ...]:
     return tuple(
-        m.group(0).strip() for m in _SENTENCE_RE.finditer(text) if m.group(0).strip()
+        m.group(0).strip()
+        for m in re.finditer(r"[^.!?…]*[.!?…]+[\"'”’)\]]*(?:\s+|$)|[^.!?…]+$", text)
+        if m.group(0).strip()
     )
 
 
@@ -100,7 +95,7 @@ def cache_key(
     text: str,
     voice: str | None,
     rate: int | None,
-    data_format: str = DEFAULT_DATA_FORMAT,
+    data_format: str = "LEI16@22050",
 ) -> str:
     material = f"{voice or ''}|{rate or ''}|{data_format}|{text}"
     return hashlib.sha1(material.encode("utf-8")).hexdigest()
