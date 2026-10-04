@@ -53,7 +53,7 @@ def test_zero_gap_chain(tmp_path: Path):
 
     # No silence anywhere: the stream is exactly ¶1 + ¶2, seamlessly.
     assert b"".join(chunks) == (b"\x01\x02" * 3) + b"\x03\x04" * 2
-    assert events(engine) == [("finished", 0), ("chained", 1)]
+    assert events(engine) == [("finished", 0, True), ("chained", 1)]
     assert engine.current_index() == 1
 
 
@@ -66,7 +66,7 @@ def test_unchained_end_goes_silent(tmp_path: Path):
 
     assert chunks[:2] == [b"\x01\x02", b"\x01\x02"]
     assert chunks[2:] == [b"\x00\x00", b"\x00\x00"]  # idle silence
-    assert events(engine) == [("finished", 0)]
+    assert events(engine) == [("finished", 0, False)]
     assert engine.current_index() is None
 
 
@@ -111,6 +111,37 @@ def test_prime_without_chain_is_ignored(tmp_path: Path):
     kinds = [e[0] for e in events(engine)]
     assert "chained" not in kinds
     assert "finished" in kinds
+
+
+def test_set_stream_format_updates_gap(tmp_path: Path):
+    """The gap must be recomputed when the engine learns the real format."""
+    first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 2)
+    second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
+    engine = RawEngine(chunk_bytes=2, gap_ms=2)
+    engine.set_stream_format(48000, 1)  # e.g. 48 kHz cached files
+    gap = round(2 * 48000 / 1000) * 2  # 192 bytes
+    assert gap == 192
+    engine.play(0, first)
+    engine.prime(1, second)
+
+    gen = engine._pull()
+    joined = b"".join(next(gen) for _ in range(120))  # 240 B > 4+192+4 body
+
+    body = (b"\x01\x02" * 2) + bytes(gap) + (b"\x03\x04" * 2)
+    assert joined.startswith(body)
+    assert joined[len(body):].strip(b"\x00") == b""
+
+
+def test_detect_output_rate():
+    from t2s import detect_output_rate
+    rate = detect_output_rate()
+    assert isinstance(rate, int) and 8000 <= rate <= 384000
+    assert detect_output_rate() == rate  # stable within a process
+
+
+def test_default_data_format_matches_device():
+    from t2s import default_data_format, detect_output_rate
+    assert default_data_format() == f"LEI16@{detect_output_rate()}"
 
 
 def test_prime_missing_file_is_best_effort(tmp_path: Path):
@@ -237,6 +268,26 @@ def test_miniaudio_real_device(tmp_path: Path):
         time_mod.sleep(0.02)
     engine.close()
     assert engine.current_index() is None  # finished streaming
+
+
+def test_device_format_follows_file_header(tmp_path: Path):
+    """Regression for the quality bug: the device must open at the cached
+    files' rate (no HAL resampling), not a hardcoded constant."""
+    if not HAVE_MINIAUDIO:
+        pytest.skip("miniaudio not installed")
+
+    path = tmp_path / "hi.wav"
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        w.writeframes(b"\x00\x00" * 4800)  # 0.1 s of silence
+
+    engine = MiniaudioEngine()
+    engine.play(0, path)
+    rate = engine._device.sample_rate
+    engine.close()
+    assert rate == 48000
 
 
 def test_miniaudio_plays_in_real_time(tmp_path: Path):

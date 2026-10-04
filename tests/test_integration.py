@@ -3,6 +3,7 @@
 Most tests run the default --player test engine (headless, fast); a few
 exercise the afplay fallback via the fake afplay binary.
 """
+import time
 from conftest import Fakes, engine_log_env, run_t2s, texts_played
 
 DOC = ("First paragraph has a few words.\n"
@@ -144,6 +145,11 @@ def test_cache_reused_across_runs(fakes: Fakes, tmp_path):
     args = [str(doc), "--cache-dir", str(cache), "--player", "test"]
 
     run_t2s(args, fakes, env_extra=env)
+    # Bounded wait: run 1 may exit while the synth worker is still writing.
+    deadline = time.monotonic() + 5
+    while (len(list(cache.glob("*.wav"))) < len(PARAS)
+           and time.monotonic() < deadline):
+        time.sleep(0.02)
     renders_after_first = fakes.say_log.read_text().splitlines()
 
     r = run_t2s(args, fakes, env_extra=env)
