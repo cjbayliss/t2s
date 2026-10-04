@@ -22,7 +22,7 @@ def main() -> int:
     log_path = os.environ.get("FAKE_SAY_LOG")
     if log_path:
         logged_path = output_path[:-5] if output_path.endswith(".part") else output_path
-        with open(log_path, "a") as log_file:
+        with open(log_path, "a", encoding="utf-8") as log_file:
             log_file.write(f"{logged_path}\t{' '.join(text.split())[:60]}\n")
 
     with wave.open(output_path, "wb") as wav:

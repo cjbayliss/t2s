@@ -217,7 +217,7 @@ def close_device(engine: StreamEngine) -> None:
 def log_stream_started(engine: StreamEngine, index: int) -> None:
     if engine.log_path is None:
         return
-    with open(engine.log_path, "a") as log_file:
+    with open(engine.log_path, "a", encoding="utf-8") as log_file:
         log_file.write(f"{engine.cell.stream.paths[index]}\n")
 
 
@@ -241,7 +241,7 @@ def pull(engine: StreamEngine) -> Iterator[bytes]:
         yield chunk if chunk is not None else b"\x00" * engine.chunk_bytes
 
 
-def pull_frames(engine: StreamEngine) -> Generator[bytes, int | None, None]:
+def pull_frames(engine: StreamEngine) -> Generator[bytes, int | None]:
     frames = yield b""
     while not engine.cell.closed:
         want_bytes = frames_to_bytes(max(int(frames or 0), 1), engine.cell.channels)
@@ -386,7 +386,7 @@ def make_test_engine(
     )
 
 
-Engine = StreamEngine | ProcEngine
+type Engine = StreamEngine | ProcEngine
 
 
 def engine_play(engine: Engine, index: int, path: Path) -> None:

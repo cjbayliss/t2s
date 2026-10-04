@@ -213,7 +213,7 @@ class StreamCrashed:
     detail: str
 
 
-EngineEvent = StreamStarted | StreamFinished | StreamChained | StreamCrashed
+type EngineEvent = StreamStarted | StreamFinished | StreamChained | StreamCrashed
 
 
 def stream_next_chunk(
@@ -277,8 +277,8 @@ def stream_next_chunk(
     return b"".join(parts), state, events
 
 
-PlayMode = Literal["playing", "paused", "stopped"]
-PlayOutcome = Literal["playing", "paused", "failed"]
+type PlayMode = Literal["playing", "paused", "stopped"]
+type PlayOutcome = Literal["playing", "paused", "failed"]
 
 
 @dataclass(frozen=True)
@@ -322,8 +322,8 @@ class Warn:
     text: str
 
 
-Effect = TryPlay | StopStream | ClearFailure | SyncTo | Note | Warn
-Effects = tuple[Effect, ...]
+type Effect = TryPlay | StopStream | ClearFailure | SyncTo | Note | Warn
+type Effects = tuple[Effect, ...]
 
 
 def handle_key(
@@ -437,7 +437,7 @@ def prefetch_window(cursor: int, ahead: int, count: int) -> tuple[int, ...]:
     return tuple(range(cursor, min(cursor + ahead + 1, count)))
 
 
-EngineChoice = Literal[
+type EngineChoice = Literal[
     "miniaudio", "test", "afplay", "afplay-fallback", "missing-miniaudio"
 ]
 
