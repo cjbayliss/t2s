@@ -1,5 +1,7 @@
 # t2s
 
+**NOTE:** This project is created using an LLM (mostly GLM 5.3 Flash)
+
 **t2s** reads documents aloud on macOS, paragraph by paragraph, using the
 built-in `say(1)` synthesizer. It shows each paragraph in the terminal as it
 is spoken, synthesizes ahead of playback so paragraphs flow into each other
