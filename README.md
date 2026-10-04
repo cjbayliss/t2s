@@ -10,7 +10,7 @@ gaplessly, and gives you pause/skip control with single keystrokes.
 ## Requirements
 
 - macOS (for `say`, `afplay`, and CoreAudio)
-- Python 3.10+ (installed for you by `uv`)
+- Python 3.14+ (installed for you by `uv`)
 
 ## Install
 

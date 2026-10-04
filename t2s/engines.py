@@ -81,7 +81,7 @@ def probe_output_rate() -> int:
                 device_id, prop_nominal_sample_rate, 8, ctypes.c_double
             )
         return 0
-    except (OSError, AttributeError):
+    except OSError, AttributeError:
         return 0
 
 
@@ -279,7 +279,7 @@ def stream_engine_play(engine: StreamEngine, index: int, path: Path) -> None:
 def stream_engine_prime(engine: StreamEngine, index: int, path: Path) -> None:
     try:
         data = engine.load(engine, path)
-    except (OSError, EOFError, wave.Error, RuntimeError):
+    except OSError, EOFError, wave.Error, RuntimeError:
         return
     with engine.lock:
         engine.cell.stream = stream_prime(engine.cell.stream, index, path, data)
