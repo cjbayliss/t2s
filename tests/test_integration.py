@@ -154,6 +154,14 @@ def test_cache_reused_across_runs(fakes: Fakes, tmp_path):
     assert texts_played(fakes.say_log, play_log) == PARAS + PARAS
 
 
+def test_gap_option_preserves_order(fakes: Fakes, tmp_path):
+    env, play_log = engine_log_env(tmp_path)
+    r, _ = run_doc(fakes, tmp_path, DOC, "--gap", "150",
+                   "--player", "test", env_extra=env)
+    assert r.returncode == 0, r.stderr
+    assert texts_played(fakes.say_log, play_log) == PARAS
+
+
 def test_width_flag(fakes: Fakes, tmp_path):
     r, _ = run_doc(fakes, tmp_path,
                    "one two three four five six seven eight nine ten",

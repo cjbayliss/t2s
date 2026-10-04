@@ -335,8 +335,11 @@ class ChainEngine:
     `events` ("crashed", idx, detail).
     """
 
-    def __init__(self, chunk_bytes: int = 1102) -> None:  # ~25 ms @ 22 kHz
+    def __init__(self, chunk_bytes: int = 1102, gap_ms: int = 0) -> None:
+        # ~25 ms chunks @ 22 kHz mono s16
         self._chunk_bytes = chunk_bytes
+        gap_frames = int(round(gap_ms * SAMPLE_RATE / 1000))
+        self._gap_bytes = gap_frames * CHANNELS * 2
         self._lock = threading.Lock()
         self.events: queue.SimpleQueue = queue.SimpleQueue()
         self._paths: dict[int, Path] = {}
@@ -345,6 +348,7 @@ class ChainEngine:
         self._data = b""
         self._pos = 0
         self._chained: int | None = None
+        self._gap_left = 0
         self._closed = False
 
     # -- main-thread API ----------------------------------------------------
@@ -380,6 +384,7 @@ class ChainEngine:
             self._data = b""
             self._pos = 0
             self._chained = None
+            self._gap_left = 0
             self._gc_locked()
 
     def current_index(self) -> int | None:
@@ -392,6 +397,7 @@ class ChainEngine:
             self._closed = True
             self._cur = None
             self._chained = None
+            self._gap_left = 0
         self._on_close()
 
     # -- hooks for subclasses ------------------------------------------------
@@ -438,13 +444,20 @@ class ChainEngine:
         """Return exactly `want` bytes of the stream, or None when idle.
 
         Paragraph boundaries are transparent: a single request can span the
-        end of one paragraph and the start of the chained next one, so the
-        stream is continuous at any request size.
+        end of one paragraph, the configured inter-paragraph gap, and the
+        start of the chained next one, so the stream is continuous at any
+        request size.
         """
         parts: list[bytes] = []
         with self._lock:
             need = want
             while need > 0:
+                if self._gap_left > 0:
+                    take = min(need, self._gap_left)
+                    parts.append(b"\x00" * take)
+                    self._gap_left -= take
+                    need -= take
+                    continue
                 if self._cur is None:
                     break
                 if self._pos >= len(self._data):
@@ -459,8 +472,10 @@ class ChainEngine:
                     self._cur = nxt
                     self._data = self._sources[nxt]
                     self._pos = 0
+                    self._gap_left = self._gap_bytes
                     self.events.put(("chained", nxt))
                     self._gc_locked()
+                    continue
                 if self._pos == 0:
                     if self._fail_idx(self._cur):
                         self.events.put(("crashed", self._cur,
@@ -492,8 +507,8 @@ class ChainEngine:
 class MiniaudioEngine(ChainEngine):
     """ChainEngine over a single long-lived miniaudio output device."""
 
-    def __init__(self, chunk_bytes: int = 1102) -> None:
-        super().__init__(chunk_bytes)
+    def __init__(self, chunk_bytes: int = 1102, gap_ms: int = 0) -> None:
+        super().__init__(chunk_bytes, gap_ms)
         self._device = None
 
     def _load(self, path: Path) -> bytes:
@@ -534,8 +549,8 @@ class TestEngine(ChainEngine):
                                playing (simulates a device error)
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, gap_ms: int = 0) -> None:
+        super().__init__(gap_ms=gap_ms)
         self._delay = float(os.environ.get("T2S_TEST_PLAY_DELAY", "0.05") or 0)
         self._fail_at = int(os.environ.get("T2S_TEST_PLAY_FAIL_AT", "0") or 0)
         self._log_path = os.environ.get("T2S_TEST_PLAY_LOG")
@@ -571,8 +586,9 @@ class TestEngine(ChainEngine):
 class SubprocessEngine:
     """afplay fallback: one external process per paragraph (with gaps)."""
 
-    def __init__(self, play_cmd: list[str]) -> None:
+    def __init__(self, play_cmd: list[str], gap_ms: int = 0) -> None:
         self._cmd = play_cmd
+        self._gap_ms = gap_ms  # not applicable: gaps live inside the stream
         self.events: queue.SimpleQueue = queue.SimpleQueue()
         self._proc: subprocess.Popen | None = None
         self._idx: int | None = None
@@ -585,6 +601,21 @@ class SubprocessEngine:
                                       stderr=subprocess.PIPE)
         self._idx = idx
         self._reported = False
+        threading.Thread(target=self._watch, args=(idx, self._proc),
+                         daemon=True).start()
+
+    def _watch(self, idx: int, proc: subprocess.Popen) -> None:
+        """Push the exit event for one spawned player process."""
+        rc = proc.wait()
+        if self._reported:
+            return  # user-initiated stop (or superseded by a newer play)
+        if rc == 0:
+            self.events.put(("finished", idx))
+        else:
+            stderr = proc.stderr.read() if proc.stderr is not None else b""
+            tail = " ".join(stderr.decode("utf-8", "replace").split())[:200]
+            self.events.put(("crashed", idx,
+                             f"player exited with code {rc}: {tail}"))
 
     def stop_stream(self) -> None:
         p = self._proc
@@ -601,19 +632,12 @@ class SubprocessEngine:
         self._idx = None
 
     def current_index(self) -> int | None:
+        """The paragraph whose player process is still running, if any."""
         p = self._proc
         if p is None or self._idx is None:
             return None
-        rc = p.poll()
-        if rc is None:
+        if p.poll() is None:
             return self._idx
-        if not self._reported:
-            self._reported = True
-            if rc != 0:
-                stderr = p.stderr.read() if p.stderr is not None else b""
-                tail = " ".join(stderr.decode("utf-8", "replace").split())[:200]
-                self.events.put(("crashed", self._idx,
-                                 f"player exited with code {rc}: {tail}"))
         self._idx = None
         return None
 
@@ -624,13 +648,14 @@ class SubprocessEngine:
         self.stop_stream()
 
 
-def make_engine(player: str, play_cmd: list[str]) -> ChainEngine | SubprocessEngine:
+def make_engine(player: str, play_cmd: list[str],
+                gap_ms: int = 0) -> ChainEngine | SubprocessEngine:
     if player == "afplay":
-        return SubprocessEngine(play_cmd)
+        return SubprocessEngine(play_cmd, gap_ms)
     if player == "test":
-        return TestEngine()
+        return TestEngine(gap_ms)
     if HAVE_MINIAUDIO:
-        return MiniaudioEngine()
+        return MiniaudioEngine(gap_ms=gap_ms)
     if player == "miniaudio":
         print("t2s: --player miniaudio but the 'miniaudio' package is not "
               "installed", file=sys.stderr)
@@ -651,7 +676,8 @@ class App:
                  voice: str | None = None, rate: int | None = None,
                  say_bin: str | None = None, play_bin: str | None = None,
                  cache_dir: str | None = None, cache_limit_mb: float = 256.0,
-                 ahead: int = 3, player: str = "auto") -> None:
+                 ahead: int = 3, player: str = "auto",
+                 gap_ms: int = 0) -> None:
         self.paras = paras
         self.idx = start_idx
         self.width = width
@@ -676,7 +702,7 @@ class App:
                                  ahead=ahead)
 
         play_cmd = [play_bin or os.environ.get("T2S_PLAY_BIN") or "afplay"]
-        self.engine = make_engine(player, play_cmd)
+        self.engine = make_engine(player, play_cmd, gap_ms)
 
         # Keyboard source: stdin when it is a terminal, otherwise the
         # controlling terminal (so `cat book.txt | t2s` stays interactive).
@@ -823,16 +849,23 @@ class App:
         self._poll_engine()
 
     def _poll_engine(self) -> None:
-        # Player failures first: they change what the progress check should do.
+        """Process engine events: failures, paragraph ends, chain syncs.
+
+        Advancement is driven by the event queue (FIFO, nothing can be
+        missed) rather than by polling, so a paragraph that starts and
+        finishes between two ticks is never replayed or skipped.
+        """
         while True:
             try:
                 ev = self.engine.events.get_nowait()
             except queue.Empty:
                 break
-            if ev[0] == "crashed" and self.state == "playing":
-                _, idx, detail = ev
+            kind = ev[0]
+            if kind == "crashed":
+                if self.state != "playing":
+                    continue
                 self._had_errors = True
-                msg = f"! playback failed: {detail}"
+                msg = f"! playback failed: {ev[2]}"
                 if self.key_fd is not None:
                     self._warn(msg)
                     self._status("⏸ device error — space: replay · "
@@ -842,36 +875,28 @@ class App:
                     self._warn(msg + " — continuing with next paragraph")
                     self._advance(after_error=True)
                     return
-        if self.state != "playing":
-            return
-        cur = self.engine.current_index()
-        if cur is None:
-            # The stream ran out without a chained paragraph: finished.
-            self._advance()
-        elif cur != self.idx:
-            self._sync_to(cur)
-
-    def _poll_playback(self) -> None:
-        if self.state != "playing" or self.player is None:
-            return
-        rc = self.player.poll()
-        if rc is None:
-            return  # still playing
-        if rc == 0:
-            self._advance()
-            return
-        msg = f"! playback exited unexpectedly (code {rc})"
-        tail = self.player.stderr_tail()
-        if tail:
-            msg += f": {tail}"
-        self._had_errors = True
-        if self.key_fd is not None:
-            self._warn(msg)
-            self._status("⏸ device error — space: replay · n/p: skip · q: quit")
-            self.state = "paused"
-        else:
-            self._warn(msg + " — continuing with next paragraph")
-            self._advance(after_error=True)
+            elif kind == "finished":
+                idx = ev[1]
+                if self.state != "playing":
+                    continue
+                self.idx = idx
+                if self.engine.current_index() is not None:
+                    continue  # chained into the next one; its event follows
+                if idx + 1 < len(self.paras):
+                    if self.play(idx + 1) == "failed":
+                        self._advance(after_error=True)
+                        return
+                else:
+                    self.running = False
+                    if self._had_errors:
+                        self._note("✓ done (with errors)")
+                    else:
+                        n = len(self.paras)
+                        self._note(f"✓ done — {n} paragraph"
+                                   f"{'s' if n != 1 else ''}")
+            elif kind == "chained":
+                if self.state == "playing":
+                    self._sync_to(ev[1])
 
     # -- keyboard -----------------------------------------------------------
 
@@ -955,6 +980,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--play-bin", default=None, metavar="PATH",
                    help="audio player binary (default: afplay, or "
                         "$T2S_PLAY_BIN)")
+    p.add_argument("--gap", type=int, default=0, metavar="MS",
+                   help="silence between paragraphs in milliseconds "
+                        "(default: 0)")
     p.add_argument("--player", default="auto",
                    choices=["auto", "miniaudio", "afplay", "test"],
                    help="playback engine: miniaudio (gapless in-process "
@@ -994,7 +1022,7 @@ def main(argv: list[str] | None = None) -> int:
               voice=args.voice, rate=args.rate,
               say_bin=args.say_bin, play_bin=args.play_bin,
               cache_dir=args.cache_dir, cache_limit_mb=args.cache_limit_mb,
-              ahead=args.ahead, player=args.player)
+              ahead=args.ahead, player=args.player, gap_ms=args.gap)
     try:
         return app.run()
     except BrokenPipeError:
