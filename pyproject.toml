@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "t2s"
+version = "0.3.0"
+description = "Read documents aloud with macOS say(1), paragraph by paragraph — gapless in-process playback, pausable, 72-column display, resilient to audio device changes."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["miniaudio>=1.61"]
+
+[project.scripts]
+t2s = "t2s:main"
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools]
+py-modules = ["t2s"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
