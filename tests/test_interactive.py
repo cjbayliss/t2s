@@ -14,7 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import T2S, Fakes, engine_log_env, texts_played
+from conftest import REPO, Fakes, engine_log_env, texts_played
 
 pytestmark = pytest.mark.skipif(
     not hasattr(pty, "openpty"), reason="requires pty support"
@@ -50,7 +50,8 @@ def spawn(
     proc = subprocess.Popen(
         [
             sys.executable,
-            str(T2S),
+            "-m",
+            "t2s",
             "--say-bin",
             fakes.say_bin,
             "--player",
@@ -64,6 +65,7 @@ def spawn(
         stderr=err_f,
         env=env,
         close_fds=True,
+        cwd=REPO,
     )
     os.close(slave)
     os.close(out_w)

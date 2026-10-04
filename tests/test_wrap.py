@@ -1,15 +1,15 @@
 """Tests for width-aware wrapping with offset tracking."""
 
-from t2s import wrap_offsets
+from t2s.pure import wrap_offsets
 
 
-def lines(text: str, width: int) -> list[tuple[str, int]]:
+def lines(text: str, width: int) -> tuple[tuple[str, int], ...]:
     return wrap_offsets(text, width)
 
 
 def test_short_text_single_line() -> None:
     out = lines("Hello there.", 72)
-    assert out == [("Hello there.", 0)]
+    assert out == (("Hello there.", 0),)
 
 
 def test_wraps_at_width() -> None:
@@ -60,8 +60,8 @@ def test_highlight_span_straddling_hard_break_clamps() -> None:
 
 
 def test_empty_text() -> None:
-    assert lines("", 72) == [("", 0)]
+    assert lines("", 72) == (("", 0),)
 
 
 def test_width_floor() -> None:
-    assert lines("abc", 0) == [("a", 0), ("b", 1), ("c", 2)]
+    assert lines("abc", 0) == (("a", 0), ("b", 1), ("c", 2))
