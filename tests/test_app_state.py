@@ -42,7 +42,7 @@ def test_q_quits_with_position_note() -> None:
         state(index=1, n_paragraphs=5, mode="playing"), "q"
     )
     assert next_state == state(index=1, n_paragraphs=5, mode="playing", running=False)
-    assert effects == (Note("· stopped at ¶ 2/5"),)
+    assert effects == (Note("stopped at 2/5"),)
 
 
 def test_ctrl_c_quits_like_q() -> None:
@@ -55,7 +55,7 @@ def test_space_pauses_a_running_stream() -> None:
     assert next_state == state(mode="paused")
     assert effects == (
         StopStream(),
-        Note("⏸ paused — space: replay paragraph · n/p: paragraph · q: quit"),
+        Note("paused - space: replay paragraph, n/p: paragraph, q: quit"),
     )
 
 
@@ -68,7 +68,7 @@ def test_space_while_playing_but_idle_is_a_no_op() -> None:
 def test_space_while_paused_replays_from_the_top() -> None:
     next_state, effects = handle_key(state(index=2, n_paragraphs=5, mode="paused"), " ")
     assert next_state == state(index=2, n_paragraphs=5, mode="paused")
-    assert effects == (ClearFailure(2), TryPlay(2, "· resumed"))
+    assert effects == (ClearFailure(2), TryPlay(2, "resumed"))
 
 
 def test_space_while_stopped_is_a_no_op() -> None:
@@ -91,12 +91,12 @@ def test_p_rewinds() -> None:
 def test_n_at_last_paragraph_reports_the_edge() -> None:
     next_state, effects = handle_key(state(index=2, n_paragraphs=3), "n")
     assert next_state == state(index=2, n_paragraphs=3)
-    assert effects == (Note("· already at last paragraph"),)
+    assert effects == (Note("already at last paragraph"),)
 
 
 def test_p_at_first_paragraph_reports_the_edge() -> None:
     _, effects = handle_key(state(index=0, n_paragraphs=3), "p")
-    assert effects == (Note("· already at first paragraph"),)
+    assert effects == (Note("already at first paragraph"),)
 
 
 def test_unknown_key_is_ignored() -> None:
@@ -139,7 +139,7 @@ def test_finished_last_paragraph_finishes_the_document() -> None:
         state(index=2, mode="playing"), StreamFinished(2, False)
     )
     assert next_state == state(index=2, mode="playing", running=False)
-    assert effects == (Note("✓ done — 3 paragraphs"),)
+    assert effects == (Note("done - 3 paragraphs"),)
 
 
 def test_finished_after_errors_reports_them() -> None:
@@ -147,7 +147,7 @@ def test_finished_after_errors_reports_them() -> None:
         state(n_paragraphs=1, mode="playing", had_errors=True),
         StreamFinished(0, False),
     )
-    assert effects == (Note("✓ done (with errors)"),)
+    assert effects == (Note("done (with errors)"),)
 
 
 def test_finished_while_paused_is_ignored() -> None:
@@ -165,7 +165,7 @@ def test_crash_while_interactive_pauses_for_space() -> None:
     assert next_state == state(mode="paused", had_errors=True)
     assert effects == (
         Warn("! playback failed: device gone"),
-        Note("⏸ device error — space: replay · n/p: skip · q: quit"),
+        Note("device error - space: replay, n/p: skip, q: quit"),
     )
 
 
@@ -175,7 +175,7 @@ def test_crash_noninteractive_skips_forward() -> None:
     )
     assert next_state == state(index=1, had_errors=True, interactive=False)
     assert effects == (
-        Warn("! playback failed: boom — continuing with next paragraph"),
+        Warn("! playback failed: boom - continuing with next paragraph"),
         TryPlay(2),
     )
 
@@ -215,7 +215,7 @@ def test_apply_play_outcome_failed_skips_to_next() -> None:
 def test_apply_play_outcome_failed_on_last_finishes_with_errors() -> None:
     next_state, effects = apply_play_outcome(state(n_paragraphs=1), 0, "failed")
     assert next_state == state(n_paragraphs=1, running=False, had_errors=True)
-    assert effects == (Note("✓ done (with errors)"),)
+    assert effects == (Note("done (with errors)"),)
 
 
 def test_skip_chain_is_loop_free() -> None:
@@ -225,7 +225,7 @@ def test_skip_chain_is_loop_free() -> None:
         tried.append(effects[0].index)
         next_state, effects = apply_play_outcome(next_state, effects[0].index, "failed")
     assert tried == [1, 2, 3]
-    assert effects == (Note("✓ done (with errors)"),)
+    assert effects == (Note("done (with errors)"),)
     assert not next_state.running
     assert next_state.had_errors
 
@@ -239,10 +239,10 @@ def test_advance_from_a_stopped_state_tries_the_next_paragraph() -> None:
 def test_advance_at_the_end_finishes() -> None:
     next_state, effects = advance(state(index=2))
     assert next_state == state(index=2, running=False)
-    assert effects == (Note("✓ done — 3 paragraphs"),)
+    assert effects == (Note("done - 3 paragraphs"),)
 
 
 def test_done_message_singular_plural_and_errors() -> None:
-    assert done_message(1, False) == "✓ done — 1 paragraph"
-    assert done_message(2, False) == "✓ done — 2 paragraphs"
-    assert done_message(7, True) == "✓ done (with errors)"
+    assert done_message(1, False) == "done - 1 paragraph"
+    assert done_message(2, False) == "done - 2 paragraphs"
+    assert done_message(7, True) == "done (with errors)"

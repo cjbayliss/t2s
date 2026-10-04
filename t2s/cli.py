@@ -115,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.file == "-":
         if sys.stdin.isatty():
             print(
-                "t2s: no input — pass a file path or pipe text (see t2s --help)",
+                "t2s: no input - pass a file path or pipe text (see t2s --help)",
                 file=sys.stderr,
             )
             return 2

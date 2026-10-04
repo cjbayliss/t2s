@@ -445,7 +445,7 @@ def make_engine(
         raise SystemExit(2)
     if choice == "afplay-fallback":
         print(
-            "t2s: miniaudio is not installed — falling back to afplay "
+            "t2s: miniaudio is not installed - falling back to afplay "
             "(pip install miniaudio for gapless playback)",
             file=sys.stderr,
         )

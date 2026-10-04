@@ -96,7 +96,7 @@ def test_space_pauses_replays_and_q_quits(fakes: Fakes, tmp_path: Path) -> None:
     reader.start()
 
     try:
-        assert wait_until(lambda: "¶ 1/1".encode() in buf), bytes(buf)
+        assert wait_until(lambda: b"1/1" in buf), bytes(buf)
         assert wait_until(
             lambda: play_log.exists() and len(play_log.read_text().splitlines()) == 1
         ), "stream started"
@@ -117,7 +117,7 @@ def test_space_pauses_replays_and_q_quits(fakes: Fakes, tmp_path: Path) -> None:
 
         os.write(master, b"q")
         assert proc.wait(timeout=10) == 0
-        assert "stopped at ¶ 1/1".encode() in bytes(buf)
+        assert b"stopped at 1/1" in bytes(buf)
     finally:
         cleanup(proc, master, out_r, reader)
 
@@ -133,8 +133,8 @@ def test_chained_advance_without_keys(fakes: Fakes, tmp_path: Path) -> None:
     reader.start()
 
     try:
-        assert wait_until(lambda: "¶ 1/2".encode() in buf), bytes(buf)
-        assert wait_until(lambda: "¶ 2/2".encode() in bytes(buf)), bytes(buf)
+        assert wait_until(lambda: b"1/2" in buf), bytes(buf)
+        assert wait_until(lambda: b"2/2" in bytes(buf)), bytes(buf)
         assert wait_until(
             lambda: play_log.exists() and len(play_log.read_text().splitlines()) == 2
         ), "both paragraphs streamed"
