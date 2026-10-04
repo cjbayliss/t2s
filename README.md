@@ -1,124 +1,91 @@
 # t2s
 
-Read a document aloud with macOS [`say(1)`](https://ss64.com/mac/say.html),
-**one paragraph at a time** — with gapless playback, pause/replay, a clean
-72-column display, and no lost progress when audio devices connect or
-disconnect.
+**t2s** reads documents aloud on macOS, paragraph by paragraph, using the
+built-in `say(1)` synthesizer. It shows each paragraph in the terminal as it
+is spoken, synthesizes ahead of playback so paragraphs flow into each other
+gaplessly, and gives you pause/skip control with single keystrokes.
 
-Python 3.10+, macOS only. One dependency (`miniaudio`, self-contained wheel).
+## Requirements
 
-## Why
-
-Driving `say` directly has four papercuts:
-
-| Problem | t2s |
-|---|---|
-| `say -i` ignores the terminal width when piped | t2s prints each paragraph wrapped to a fixed width (default **72** columns) |
-| `say` cannot pause | **Space** stops the current paragraph; **Space** again replays it from its beginning — instantly, from an in-memory buffer |
-| `say` dies silently when an audio device appears/disappears | Synthesis is offline (it never touches the audio device); only playback does, so a device change can at worst interrupt the current paragraph. t2s reports it and waits — **Space** replays the cached file. Your place is never lost beyond the current paragraph |
-| `say` cannot start mid-document | `--start N` begins at paragraph *N* (1-based, as shown in the header) |
-
-## How it works
-
-Each paragraph is synthesized offline to a small WAV file in a cache
-directory (`say -o …`), a few paragraphs ahead of playback (`--ahead`,
-default 3). The synthesis format defaults to **16-bit at the output
-device's native sample rate** (probed via CoreAudio), so playback needs no
-resampling anywhere and sounds like `say` played directly. Override it with
-`--data-format LEI16@44100` if you prefer (caches are keyed per format).
-
-Playback is **in-process**: the default engine decodes the cached files
-into memory and streams them through a single long-lived miniaudio device.
-When a paragraph's samples run out, the stream chains straight into the
-next preloaded paragraph's samples — **zero silence between paragraphs**
-(or `--gap MS` milliseconds of it, your choice), no process spawning, no
-device re-initialization. Pause/replay just stops and restarts the stream.
-
-The cache (`~/Library/Caches/t2s`, one file per paragraph, keyed by text +
-voice + rate + format) persists between runs: re-reading or resuming a
-document skips synthesis entirely. It is pruned oldest-first when it grows
-beyond `--cache-limit-mb` (default 256).
-
-Playback uses the system's currently selected output device (System
-Settings → Sound), so you can switch devices mid-book; if the device
-vanishes mid-paragraph, t2s tells you and waits — press **Space** when the
-new device is ready.
+- macOS (for `say`, `afplay`, and CoreAudio)
+- Python 3.10+ (installed for you by `uv`)
 
 ## Install
 
 ```sh
-uv tool install .        # or: pipx install .
+uv tool install git+https://github.com/cjbayliss/t2s
 ```
 
-Or run from a checkout: `python3 -m t2s chapter.txt`.
-Without `miniaudio` installed, t2s falls back to playing each paragraph
-with `afplay` (small gaps between paragraphs).
+To update later:
+
+```sh
+uv tool upgrade t2s
+```
 
 ## Usage
 
 ```sh
-t2s chapter.txt
-cat chapter.txt | t2s --voice Fred -r 190
-t2s chapter.txt --start 14
-t2s chapter.txt --split-long 1200      # finer pause/replay granularity
+t2s [options] [file]
+```
+
+Read *file* aloud. If *file* is omitted or is `-`, t2s reads standard input,
+so you can pipe anything in:
+
+```sh
+t2s article.txt
+t2s book.txt --start 42          # resume from paragraph 42
+t2s -v Samantha -r 180 doc.txt   # choose a voice and speaking rate
+pandoc --to=plain paper.md | t2s # read the plain-text output of a pipeline
+curl -s https://example.com/post | t2s --split-long 600
+t2s --gap 300 notes.txt          # 300 ms of silence between paragraphs
 ```
 
 ### Keys
 
-| Key | Action |
-|---|---|
-| `space` | stop / replay the current paragraph |
-| `n` / `p` | next / previous paragraph |
-| `q`, Ctrl-C | quit |
+While reading, t2s prints a dim header (`── ¶ 3/57 ──`) followed by the
+current paragraph, wrapped to the display width. Keys are read from the
+terminal (from `/dev/tty` if stdin is piped):
 
-Keyboard input comes from the terminal, so `cat book.txt | t2s` stays
-fully interactive. When no terminal is available (e.g. under a cron job),
-t2s runs non-interactively: on a synthesis or playback failure it reports
-the error and continues with the next paragraph.
+| Key       | Action                                          |
+| --------- | ----------------------------------------------- |
+| `space`   | pause; press again to replay the paragraph      |
+| `n`       | skip to the next paragraph                      |
+| `p`       | go back to the previous paragraph               |
+| `q` / ^C  | quit                                            |
+
+Without a terminal for keys, t2s runs straight through, skipping paragraphs
+it cannot render or play.
 
 ### Options
 
 ```
-file                  text file to read ('-' or omitted: standard input)
--v, --voice NAME      voice passed to say
--r, --rate WPM        speech rate in words per minute
---width COLS          display wrap width (default: 72)
---start N             paragraph number to start from (1-based)
---split-long CHARS    also split paragraphs longer than CHARS at sentence
-                      boundaries
---ahead N             paragraphs to synthesize ahead of playback (default 3;
-                      raise for slow "premium" voices)
---gap MS              silence between paragraphs in milliseconds
-                      (default: 0 — seamless chaining)
---data-format FMT     synthesis format for say, e.g. LEI16@44100
-                      (default: 16-bit at the output device's native rate)
---cache-dir PATH      audio cache directory (default: ~/Library/Caches/t2s)
---cache-limit-mb MB   prune cache when larger than this (default 256)
---player ENGINE       auto (default) | miniaudio | afplay | test
---say-bin PATH        say binary (default: say, or $T2S_SAY_BIN)
---play-bin PATH       afplay binary (default: afplay, or $T2S_PLAY_BIN)
---version
+file                   text file to read ('-' or omitted: standard input)
+-v, --voice VOICE      voice name passed to say
+-r, --rate WPM         speech rate in words per minute
+--width COLS           display wrap width (default: 72)
+--start N              paragraph number to start from (1-based)
+--split-long CHARS     also split paragraphs longer than CHARS at sentence
+                       boundaries
+--ahead N              paragraphs to synthesize ahead of playback
+                       (default: 3; raise for slow premium voices)
+--cache-dir PATH       audio cache directory (default: ~/Library/Caches/t2s)
+--cache-limit-mb MB    prune the cache when larger than this
+                       (default: 256; 0 = unlimited)
+--gap MS               silence between paragraphs in milliseconds (default: 0)
+--data-format FMT      synthesis format for say, e.g. LEI16@48000
+                       (default: LEI16 at the output device's native rate)
+--say-bin PATH         say binary to run (default: say, or $T2S_SAY_BIN)
+--play-bin PATH        audio player binary (default: afplay, or $T2S_PLAY_BIN)
+--player ENGINE        playback engine: miniaudio (gapless in-process
+                       streaming), afplay (external process fallback),
+                       test (headless, for t2s's own tests), or auto
+                       (default: miniaudio, falls back to afplay)
+--version              show the version and exit
 ```
 
-## Development
+### Environment
 
-```sh
-python3 -m venv .venv && .venv/bin/pip install -e .[test]
-.venv/bin/python -m pytest -q
-```
-
-The code is split by purity: `t2s/pure.py` is the value-to-value core
-(text splitting, wrapping, cache policy, the stream and application
-state machines) and imports no effect machinery; `t2s/synth.py`,
-`t2s/engines.py`, `t2s/app.py`, and `t2s/cli.py` are the effectful
-shells around it. The interactive logic is pure (`tests/test_app_state.py`
-exercises keys, engine events and skip chains as plain values), so the
-pty tests only have to check that the shell performs what the pure
-transitions decide.
-
-Tests never touch audio (the real-device tests probe for a usable output
-device and skip when none is available, as on CI runners):
-`tests/fake_say.py`
-writes tiny WAVs offline, the `--player test` engine is fully headless and
-scriptable, and the interactive tests drive t2s through a pty pressing
-real keys.
+| Variable       | Purpose                             |
+| -------------- | ----------------------------------- |
+| `T2S_SAY_BIN`  | default for `--say-bin`             |
+| `T2S_PLAY_BIN` | default for `--play-bin`            |
