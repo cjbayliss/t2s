@@ -24,13 +24,13 @@ def wait_until(
 
 
 def make_worker(
-    tmp_path: Path, paras: list[str], ahead: int = 3
+    tmp_path: Path, paragraphs: list[str], ahead: int = 3
 ) -> tuple[SynthWorker, Path]:
-    keys = [cache_key(p, None, None) for p in paras]
+    cache_keys = [cache_key(paragraph, None, None) for paragraph in paragraphs]
     cache = tmp_path / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     worker = SynthWorker(
-        paras, keys, cache, [sys.executable, str(FAKE_SAY)], ahead=ahead
+        paragraphs, cache_keys, cache, [sys.executable, str(FAKE_SAY)], ahead=ahead
     )
     worker.start()
     return worker, cache
@@ -79,8 +79,8 @@ def test_prefetch_window_edges() -> None:
 
 
 def test_prefetch_window(tmp_path: Path) -> None:
-    paras = [f"paragraph number {i}" for i in range(8)]
-    worker, _ = make_worker(tmp_path, paras, ahead=2)
+    paragraphs = [f"paragraph number {i}" for i in range(8)]
+    worker, _ = make_worker(tmp_path, paragraphs, ahead=2)
     try:
         worker.set_cursor(0)
         assert worker.ensure(0).exists()
@@ -95,8 +95,8 @@ def test_prefetch_window(tmp_path: Path) -> None:
 
 def test_failure_then_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FAKE_SAY_FAIL_TEXT", "jinx")
-    paras = ["fine one", "jinxed paragraph", "fine two"]
-    worker, _ = make_worker(tmp_path, paras, ahead=3)
+    paragraphs = ["fine one", "jinxed paragraph", "fine two"]
+    worker, _ = make_worker(tmp_path, paragraphs, ahead=3)
     try:
         worker.set_cursor(0)
         assert worker.ensure(0).exists()

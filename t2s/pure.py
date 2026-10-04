@@ -12,11 +12,11 @@ from typing import Literal
 
 SAMPLE_RATE = 22050
 CHANNELS = 1
-FORMAT_NAME = "LEI16@22050"
+DEFAULT_DATA_FORMAT = "LEI16@22050"
 
 
-def nominal_output_rate(raw: int) -> int:
-    return raw if 8000 <= raw <= 384000 else 48000
+def nominal_output_rate(reported_rate: int) -> int:
+    return reported_rate if 8000 <= reported_rate <= 384000 else 48000
 
 
 def frames_to_bytes(frames: int, channels: int) -> int:
@@ -42,13 +42,13 @@ def split_sentences(text: str) -> tuple[str, ...]:
 
 def pack_sentences(sentences: Sequence[str], max_chars: int) -> tuple[str, ...]:
 
-    def pack(chunks: tuple[str, ...], sentence: str) -> tuple[str, ...]:
-        if not chunks:
+    def pack(packed: tuple[str, ...], sentence: str) -> tuple[str, ...]:
+        if not packed:
             return (sentence,)
-        cur = chunks[-1]
-        if len(cur) + 1 + len(sentence) > max_chars:
-            return (*chunks, sentence)
-        return (*chunks[:-1], f"{cur} {sentence}")
+        current = packed[-1]
+        if len(current) + 1 + len(sentence) > max_chars:
+            return (*packed, sentence)
+        return (*packed[:-1], f"{current} {sentence}")
 
     return reduce(pack, sentences, ())
 
@@ -61,11 +61,11 @@ def split_long_paragraph(text: str, max_chars: int) -> tuple[str, ...]:
 
 def split_paragraphs(text: str, max_chars: int | None = None) -> tuple[str, ...]:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    normalized = (normalize(chunk) for chunk in re.split(r"\n[ \t]*\n+", text))
+    normalized = (normalize(paragraph) for paragraph in re.split(r"\n[ \t]*\n+", text))
     expanded = (
-        split_long_paragraph(para, max_chars) if max_chars else (para,)
-        for para in normalized
-        if para
+        split_long_paragraph(paragraph, max_chars) if max_chars else (paragraph,)
+        for paragraph in normalized
+        if paragraph
     )
     return tuple(chain.from_iterable(expanded))
 
@@ -73,9 +73,9 @@ def split_paragraphs(text: str, max_chars: int | None = None) -> tuple[str, ...]
 def _line_end(text: str, start: int, width: int) -> int:
     end = min(start + width, len(text))
     if end < len(text):
-        sp = text.rfind(" ", start, end + 1)
-        if sp > start:
-            end = sp
+        space_index = text.rfind(" ", start, end + 1)
+        if space_index > start:
+            end = space_index
     return end
 
 
@@ -97,7 +97,10 @@ def wrap_offsets(text: str, width: int) -> tuple[tuple[str, int], ...]:
 
 
 def cache_key(
-    text: str, voice: str | None, rate: int | None, data_format: str = FORMAT_NAME
+    text: str,
+    voice: str | None,
+    rate: int | None,
+    data_format: str = DEFAULT_DATA_FORMAT,
 ) -> str:
     material = f"{voice or ''}|{rate or ''}|{data_format}|{text}"
     return hashlib.sha1(material.encode("utf-8")).hexdigest()
@@ -110,86 +113,108 @@ class CacheFile:
     mtime: float
 
 
-def evictions(files: Sequence[CacheFile], limit_bytes: float) -> tuple[Path, ...]:
-    ordered = sorted(files, key=attrgetter("mtime"))
-    total = sum(f.size for f in ordered)
+def evictions(cache_files: Sequence[CacheFile], limit_bytes: float) -> tuple[Path, ...]:
+    ordered = sorted(cache_files, key=attrgetter("mtime"))
+    total = sum(cache_file.size for cache_file in ordered)
     remaining = (
-        total - gone for gone in accumulate(chain((0,), (f.size for f in ordered)))
+        total - cumulative_size
+        for cumulative_size in accumulate(
+            chain((0,), (cache_file.size for cache_file in ordered))
+        )
     )
-    n = sum(1 for left in remaining if left > limit_bytes)
-    return tuple(f.path for f in ordered[:n])
+    evict_count = sum(1 for remaining_size in remaining if remaining_size > limit_bytes)
+    return tuple(cache_file.path for cache_file in ordered[:evict_count])
 
 
 @dataclass(frozen=True)
 class StreamState:
     sources: Mapping[int, bytes] = field(default_factory=dict[int, bytes])
     paths: Mapping[int, Path] = field(default_factory=dict[int, Path])
-    cur: int | None = None
+    current_index: int | None = None
     data: bytes = b""
-    pos: int = 0
-    chained: int | None = None
-    gap_left: int = 0
-    starts: int = 0
+    data_pos: int = 0
+    chained_index: int | None = None
+    gap_bytes_left: int = 0
+    start_count: int = 0
 
 
-def stream_gc(s: StreamState) -> StreamState:
-    if s.cur is None and s.chained is None:
-        return s
-    floor = min(i for i in (s.cur, s.chained) if i is not None)
+def stream_gc(state: StreamState) -> StreamState:
+    if state.current_index is None and state.chained_index is None:
+        return state
+    floor = min(
+        index
+        for index in (state.current_index, state.chained_index)
+        if index is not None
+    )
     return replace(
-        s,
-        sources={i: b for i, b in s.sources.items() if i >= floor},
-        paths={i: p for i, p in s.paths.items() if i >= floor},
+        state,
+        sources={i: b for i, b in state.sources.items() if i >= floor},
+        paths={i: p for i, p in state.paths.items() if i >= floor},
     )
 
 
-def stream_play(s: StreamState, idx: int, path: Path, data: bytes) -> StreamState:
+def stream_play(state: StreamState, index: int, path: Path, data: bytes) -> StreamState:
     return stream_gc(
         replace(
-            s,
-            sources={**s.sources, idx: data},
-            paths={**s.paths, idx: path},
-            cur=idx,
+            state,
+            sources={**state.sources, index: data},
+            paths={**state.paths, index: path},
+            current_index=index,
             data=data,
-            pos=0,
-            chained=None,
+            data_pos=0,
+            chained_index=None,
         )
     )
 
 
-def stream_prime(s: StreamState, idx: int, path: Path, data: bytes) -> StreamState:
-    chained = idx if s.cur is not None and idx == s.cur + 1 else s.chained
+def stream_prime(
+    state: StreamState, index: int, path: Path, data: bytes
+) -> StreamState:
+    chained_index = (
+        index
+        if state.current_index is not None and index == state.current_index + 1
+        else state.chained_index
+    )
     return replace(
-        s,
-        sources={**s.sources, idx: data},
-        paths={**s.paths, idx: path},
-        chained=chained,
+        state,
+        sources={**state.sources, index: data},
+        paths={**state.paths, index: path},
+        chained_index=chained_index,
     )
 
 
-def stream_stop(s: StreamState) -> StreamState:
-    return stream_gc(replace(s, cur=None, data=b"", pos=0, chained=None, gap_left=0))
+def stream_stop(state: StreamState) -> StreamState:
+    return stream_gc(
+        replace(
+            state,
+            current_index=None,
+            data=b"",
+            data_pos=0,
+            chained_index=None,
+            gap_bytes_left=0,
+        )
+    )
 
 
 @dataclass(frozen=True)
 class StreamStarted:
-    idx: int
+    index: int
 
 
 @dataclass(frozen=True)
 class StreamFinished:
-    idx: int
+    index: int
     chained: bool
 
 
 @dataclass(frozen=True)
 class StreamChained:
-    idx: int
+    index: int
 
 
 @dataclass(frozen=True)
 class StreamCrashed:
-    idx: int
+    index: int
     detail: str
 
 
@@ -197,70 +222,75 @@ EngineEvent = StreamStarted | StreamFinished | StreamChained | StreamCrashed
 
 
 def stream_next_chunk(
-    s: StreamState,
-    want: int,
-    gap_bytes: int,
+    state: StreamState,
+    want_bytes: int,
+    gap_size_bytes: int,
     fail_at: int = 0,
 ) -> tuple[bytes | None, StreamState, tuple[EngineEvent, ...]]:
-    state = s
     parts: tuple[bytes, ...] = ()
     events: tuple[EngineEvent, ...] = ()
-    need = want
-    while need > 0:
-        if state.gap_left > 0:
-            take = min(need, state.gap_left)
+    remaining = want_bytes
+    while remaining > 0:
+        if state.gap_bytes_left > 0:
+            take = min(remaining, state.gap_bytes_left)
             parts += (b"\x00" * take,)
-            state = replace(state, gap_left=state.gap_left - take)
-            need -= take
+            state = replace(state, gap_bytes_left=state.gap_bytes_left - take)
+            remaining -= take
             continue
-        if state.cur is None:
+        if state.current_index is None:
             break
-        cur = state.cur
-        if state.pos >= len(state.data):
-            nxt = state.chained
-            chained = nxt is not None and nxt in state.sources
-            events += (StreamFinished(cur, chained),)
-            if nxt is None or nxt not in state.sources:
+        index = state.current_index
+        if state.data_pos >= len(state.data):
+            next_index = state.chained_index
+            chained = next_index is not None and next_index in state.sources
+            events += (StreamFinished(index, chained),)
+            if next_index is None or next_index not in state.sources:
                 state = stream_stop(state)
                 break
             state = stream_gc(
                 replace(
                     state,
-                    cur=nxt,
-                    data=state.sources[nxt],
-                    pos=0,
-                    chained=None,
-                    gap_left=gap_bytes,
+                    current_index=next_index,
+                    data=state.sources[next_index],
+                    data_pos=0,
+                    chained_index=None,
+                    gap_bytes_left=gap_size_bytes,
                 )
             )
-            events += (StreamChained(nxt),)
+            events += (StreamChained(next_index),)
             continue
-        if state.pos == 0:
-            starts = state.starts + 1
-            state = replace(state, starts=starts)
-            if fail_at and starts == fail_at:
-                events += (StreamCrashed(cur, "simulated device error"),)
-                state = replace(state, cur=None, data=b"", pos=0, chained=None)
+        if state.data_pos == 0:
+            start_count = state.start_count + 1
+            state = replace(state, start_count=start_count)
+            if fail_at and start_count == fail_at:
+                events += (StreamCrashed(index, "simulated device error"),)
+                state = replace(
+                    state,
+                    current_index=None,
+                    data=b"",
+                    data_pos=0,
+                    chained_index=None,
+                )
                 break
-            events += (StreamStarted(cur),)
-        take = min(need, len(state.data) - state.pos)
-        parts += (state.data[state.pos : state.pos + take],)
-        state = replace(state, pos=state.pos + take)
-        need -= take
+            events += (StreamStarted(index),)
+        take = min(remaining, len(state.data) - state.data_pos)
+        parts += (state.data[state.data_pos : state.data_pos + take],)
+        state = replace(state, data_pos=state.data_pos + take)
+        remaining -= take
     if not parts:
         return None, state, events
     return b"".join(parts), state, events
 
 
-PlayState = Literal["playing", "paused", "stopped"]
+PlayMode = Literal["playing", "paused", "stopped"]
 PlayOutcome = Literal["playing", "paused", "failed"]
 
 
 @dataclass(frozen=True)
 class AppState:
-    idx: int
-    n_paras: int
-    mode: PlayState = "stopped"
+    index: int
+    n_paragraphs: int
+    mode: PlayMode = "stopped"
     running: bool = True
     had_errors: bool = False
     interactive: bool = False
@@ -268,7 +298,7 @@ class AppState:
 
 @dataclass(frozen=True)
 class TryPlay:
-    idx: int
+    index: int
     note: str | None = None
 
 
@@ -279,12 +309,12 @@ class StopStream:
 
 @dataclass(frozen=True)
 class ClearFailure:
-    idx: int
+    index: int
 
 
 @dataclass(frozen=True)
 class SyncTo:
-    idx: int
+    index: int
 
 
 @dataclass(frozen=True)
@@ -302,85 +332,93 @@ Effects = tuple[Effect, ...]
 
 
 def handle_key(
-    s: AppState, ch: str, engine_cur: int | None = None
+    state: AppState, key: str, engine_index: int | None = None
 ) -> tuple[AppState, Effects]:
-    if ch in ("q", "Q", "\x03"):
-        return replace(s, running=False), (
-            Note(f"· stopped at ¶ {s.idx + 1}/{s.n_paras}"),
+    if key in ("q", "Q", "\x03"):
+        return replace(state, running=False), (
+            Note(f"· stopped at ¶ {state.index + 1}/{state.n_paragraphs}"),
         )
-    if ch == " ":
-        if s.mode == "playing":
-            if engine_cur is not None:
-                return replace(s, mode="paused"), (
+    if key == " ":
+        if state.mode == "playing":
+            if engine_index is not None:
+                return replace(state, mode="paused"), (
                     StopStream(),
                     Note(
                         "⏸ paused — space: replay paragraph · n/p: paragraph · q: quit"
                     ),
                 )
-            return s, ()
-        if s.mode == "paused":
-            return s, (ClearFailure(s.idx), TryPlay(s.idx, "· resumed"))
-        return s, ()
-    if ch in ("n", "N", "p", "P"):
-        delta = 1 if ch in ("n", "N") else -1
-        target = s.idx + delta
-        if not 0 <= target < s.n_paras:
+            return state, ()
+        if state.mode == "paused":
+            return state, (
+                ClearFailure(state.index),
+                TryPlay(state.index, "· resumed"),
+            )
+        return state, ()
+    if key in ("n", "N", "p", "P"):
+        delta = 1 if key in ("n", "N") else -1
+        target = state.index + delta
+        if not 0 <= target < state.n_paragraphs:
             edge = "last" if delta > 0 else "first"
-            return s, (Note(f"· already at {edge} paragraph"),)
-        return s, (TryPlay(target),)
-    return s, ()
+            return state, (Note(f"· already at {edge} paragraph"),)
+        return state, (TryPlay(target),)
+    return state, ()
 
 
-def handle_engine_event(s: AppState, ev: EngineEvent) -> tuple[AppState, Effects]:
-    match ev:
-        case StreamCrashed(idx, detail):
-            if s.mode != "playing":
-                return s, ()
+def handle_engine_event(
+    state: AppState, event: EngineEvent
+) -> tuple[AppState, Effects]:
+    match event:
+        case StreamCrashed(index, detail):
+            if state.mode != "playing":
+                return state, ()
             msg = f"! playback failed: {detail}"
-            if s.interactive:
-                return replace(s, mode="paused", had_errors=True), (
+            if state.interactive:
+                return replace(state, mode="paused", had_errors=True), (
                     Warn(msg),
                     Note("⏸ device error — space: replay · n/p: skip · q: quit"),
                 )
-            s2, efs = advance(
-                replace(s, mode="stopped", had_errors=True), after_error=True
+            next_state, effects = advance(
+                replace(state, mode="stopped", had_errors=True), after_error=True
             )
-            return s2, (Warn(msg + " — continuing with next paragraph"), *efs)
-        case StreamFinished(idx, chained):
-            if s.mode != "playing":
-                return s, ()
-            s2 = replace(s, idx=idx)
+            return next_state, (
+                Warn(msg + " — continuing with next paragraph"),
+                *effects,
+            )
+        case StreamFinished(index, chained):
+            if state.mode != "playing":
+                return state, ()
+            next_state = replace(state, index=index)
             if chained:
-                return s2, ()
-            if idx + 1 < s.n_paras:
-                return s2, (TryPlay(idx + 1),)
-            return replace(s2, running=False), (
-                Note(done_message(s.n_paras, s2.had_errors)),
+                return next_state, ()
+            if index + 1 < state.n_paragraphs:
+                return next_state, (TryPlay(index + 1),)
+            return replace(next_state, running=False), (
+                Note(done_message(state.n_paragraphs, next_state.had_errors)),
             )
-        case StreamChained(idx):
-            if s.mode == "playing":
-                return replace(s, idx=idx), (SyncTo(idx),)
-            return s, ()
+        case StreamChained(index):
+            if state.mode == "playing":
+                return replace(state, index=index), (SyncTo(index),)
+            return state, ()
         case StreamStarted():
-            return s, ()
+            return state, ()
 
 
-def play_resolved(
-    s: AppState, idx: int, outcome: PlayOutcome
+def apply_play_outcome(
+    state: AppState, index: int, outcome: PlayOutcome
 ) -> tuple[AppState, Effects]:
     if outcome == "playing":
-        return replace(s, idx=idx, mode="playing"), ()
+        return replace(state, index=index, mode="playing"), ()
     if outcome == "paused":
-        return replace(s, idx=idx, mode="paused", had_errors=True), ()
-    return advance(replace(s, idx=idx, mode="stopped", had_errors=True))
+        return replace(state, index=index, mode="paused", had_errors=True), ()
+    return advance(replace(state, index=index, mode="stopped", had_errors=True))
 
 
-def advance(s: AppState, *, after_error: bool = False) -> tuple[AppState, Effects]:
-    nxt = s.idx + 1
-    if nxt < s.n_paras:
-        return s, (TryPlay(nxt),)
-    return replace(s, running=False), (
-        Note(done_message(s.n_paras, after_error or s.had_errors)),
+def advance(state: AppState, *, after_error: bool = False) -> tuple[AppState, Effects]:
+    next_index = state.index + 1
+    if next_index < state.n_paragraphs:
+        return state, (TryPlay(next_index),)
+    return replace(state, running=False), (
+        Note(done_message(state.n_paragraphs, after_error or state.had_errors)),
     )
 
 
@@ -402,8 +440,8 @@ def done_message(count: int, had_errors: bool) -> str:
     return f"✓ done — {count} paragraph{'s' if count != 1 else ''}"
 
 
-def prefetch_window(cursor: int, ahead: int, n: int) -> tuple[int, ...]:
-    return tuple(range(cursor, min(cursor + ahead + 1, n)))
+def prefetch_window(cursor: int, ahead: int, count: int) -> tuple[int, ...]:
+    return tuple(range(cursor, min(cursor + ahead + 1, count)))
 
 
 EngineChoice = Literal[

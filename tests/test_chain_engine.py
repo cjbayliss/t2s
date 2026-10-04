@@ -47,24 +47,25 @@ def audio_available() -> bool:
 
 
 def test_stream_transitions_are_pure() -> None:
-    s = StreamState()
-    t = stream_play(s, 0, Path("a.raw"), b"\x01\x02")
-    assert s == StreamState()
-    assert t.cur == 0 and t.data == b"\x01\x02" and t.pos == 0
+    initial = StreamState()
+    played = stream_play(initial, 0, Path("a.raw"), b"\x01\x02")
+    assert initial == StreamState()
+    assert played.current_index == 0
+    assert played.data == b"\x01\x02" and played.data_pos == 0
 
 
 def make_wav(tmp_path: Path, name: str, payload: bytes) -> Path:
-    p = tmp_path / name
-    p.write_bytes(payload)
-    return p
+    path = tmp_path / name
+    path.write_bytes(payload)
+    return path
 
 
-def drain(engine: RawEngine, n: int) -> list[bytes]:
+def drain(engine: RawEngine, count: int) -> list[bytes]:
     gen = engine._pull()
-    return [next(gen) for _ in range(n)]
+    return [next(gen) for _ in range(count)]
 
 
-def take(engine: RawEngine) -> EngineEvent | None:
+def pop_event(engine: RawEngine) -> EngineEvent | None:
     try:
         return engine.events.get_nowait()
     except queue.Empty:
@@ -72,10 +73,10 @@ def take(engine: RawEngine) -> EngineEvent | None:
 
 
 def events(engine: RawEngine) -> list[EngineEvent]:
-    out: list[EngineEvent] = []
-    while (ev := take(engine)) is not None:
-        out.append(ev)
-    return out
+    collected: list[EngineEvent] = []
+    while (event := pop_event(engine)) is not None:
+        collected.append(event)
+    return collected
 
 
 def test_zero_gap_chain(tmp_path: Path) -> None:
@@ -150,9 +151,9 @@ def test_prime_without_chain_is_ignored(tmp_path: Path) -> None:
     engine.play(0, a)
     engine.prime(2, c)
     drain(engine, 3)
-    evs = events(engine)
-    assert not any(isinstance(e, StreamChained) for e in evs)
-    assert any(isinstance(e, StreamFinished) for e in evs)
+    engine_events = events(engine)
+    assert not any(isinstance(e, StreamChained) for e in engine_events)
+    assert any(isinstance(e, StreamFinished) for e in engine_events)
 
 
 def test_set_stream_format_updates_gap(tmp_path: Path) -> None:
@@ -165,8 +166,8 @@ def test_set_stream_format_updates_gap(tmp_path: Path) -> None:
     engine.play(0, first)
     engine.prime(1, second)
 
-    gen = engine._pull()
-    joined = b"".join(next(gen) for _ in range(120))
+    pull = engine._pull()
+    joined = b"".join(next(pull) for _ in range(120))
 
     body = (b"\x01\x02" * 2) + bytes(gap) + (b"\x03\x04" * 2)
     assert joined.startswith(body)
@@ -210,16 +211,16 @@ def test_gap_inserts_silence_between_paragraphs(tmp_path: Path) -> None:
     first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 3)
     second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
     engine = RawEngine(chunk_bytes=2, gap_ms=2)
-    gap_bytes = round(2 * SAMPLE_RATE / 1000) * 2
-    assert gap_bytes == 88
+    expected_gap = round(2 * SAMPLE_RATE / 1000) * 2
+    assert expected_gap == 88
     engine.play(0, first)
     engine.prime(1, second)
 
-    gen = engine._pull()
-    chunks = [next(gen) for _ in range(60)]
+    pull = engine._pull()
+    chunks = [next(pull) for _ in range(60)]
     joined = b"".join(chunks)
 
-    body = (b"\x01\x02" * 3) + bytes(gap_bytes) + (b"\x03\x04" * 2)
+    body = (b"\x01\x02" * 3) + bytes(expected_gap) + (b"\x03\x04" * 2)
     assert joined.startswith(body)
     assert joined[len(body) :].strip(b"\x00") == b""
     assert events(engine) == [
@@ -252,14 +253,14 @@ def test_gap_across_request_boundaries(tmp_path: Path) -> None:
     first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 2)
     second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
     engine = RawEngine(chunk_bytes=2, gap_ms=10)
-    gap_bytes = round(10 * SAMPLE_RATE / 1000) * 2
+    expected_gap = round(10 * SAMPLE_RATE / 1000) * 2
     engine.play(0, first)
     engine.prime(1, second)
 
-    gen = engine._pull_frames()
-    next(gen)
-    got = gen.send(230)
-    expected = (b"\x01\x02" * 2) + bytes(gap_bytes) + (b"\x03\x04" * 2)
+    pull = engine._pull_frames()
+    next(pull)
+    got = pull.send(230)
+    expected = (b"\x01\x02" * 2) + bytes(expected_gap) + (b"\x03\x04" * 2)
     assert got.startswith(expected)
     assert got[len(expected) :].strip(b"\x00") == b""
 
@@ -271,11 +272,11 @@ def test_pull_frames_protocol(tmp_path: Path) -> None:
     engine.play(0, first)
     engine.prime(1, second)
 
-    gen = engine._pull_frames()
-    assert next(gen) == b""
-    assert gen.send(2) == b"\x01\x02\x01\x02"
-    assert gen.send(3) == b"\x01\x02\x03\x04\x03\x04"
-    assert gen.send(2) == b"\x00\x00\x00\x00"
+    pull = engine._pull_frames()
+    assert next(pull) == b""
+    assert pull.send(2) == b"\x01\x02\x01\x02"
+    assert pull.send(3) == b"\x01\x02\x03\x04\x03\x04"
+    assert pull.send(2) == b"\x00\x00\x00\x00"
     assert events(engine) == [
         StreamFinished(0, True),
         StreamChained(1),
@@ -290,10 +291,10 @@ def test_pull_frames_single_request_spans_both(tmp_path: Path) -> None:
     engine.play(0, first)
     engine.prime(1, second)
 
-    gen = engine._pull_frames()
-    next(gen)
-    assert gen.send(5) == (b"\x01\x02" * 3) + (b"\x03\x04" * 2)
-    assert gen.send(2) == bytes(4)
+    pull = engine._pull_frames()
+    next(pull)
+    assert pull.send(5) == (b"\x01\x02" * 3) + (b"\x03\x04" * 2)
+    assert pull.send(2) == bytes(4)
     assert events(engine) == [
         StreamFinished(0, True),
         StreamChained(1),
@@ -304,20 +305,20 @@ def test_pull_frames_single_request_spans_both(tmp_path: Path) -> None:
 def test_miniaudio_real_device(tmp_path: Path) -> None:
     if not audio_available():
         pytest.skip("no usable audio output device")
-    import time as time_mod
+    import time
 
     path = tmp_path / "beep.wav"
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(22050)
-        w.writeframes(b"\x00\x00" * 4410)
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(22050)
+        wav.writeframes(b"\x00\x00" * 4410)
 
     engine = MiniaudioEngine()
     engine.play(0, path)
-    deadline = time_mod.monotonic() + 5
-    while engine.current_index() is not None and time_mod.monotonic() < deadline:
-        time_mod.sleep(0.02)
+    deadline = time.monotonic() + 5
+    while engine.current_index() is not None and time.monotonic() < deadline:
+        time.sleep(0.02)
     engine.close()
     assert engine.current_index() is None
 
@@ -327,11 +328,11 @@ def test_device_format_follows_file_header(tmp_path: Path) -> None:
         pytest.skip("no usable audio output device")
 
     path = tmp_path / "hi.wav"
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(48000)
-        w.writeframes(b"\x00\x00" * 4800)
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(48000)
+        wav.writeframes(b"\x00\x00" * 4800)
 
     engine = MiniaudioEngine()
     engine.play(0, path)
@@ -343,22 +344,22 @@ def test_device_format_follows_file_header(tmp_path: Path) -> None:
 def test_miniaudio_plays_in_real_time(tmp_path: Path) -> None:
     if not audio_available():
         pytest.skip("no usable audio output device")
-    import time as time_mod
+    import time
 
     path = tmp_path / "long.wav"
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(22050)
-        w.writeframes(b"\x00\x00" * 22050 * 2)
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(22050)
+        wav.writeframes(b"\x00\x00" * 22050 * 2)
 
     engine = MiniaudioEngine()
     engine.play(0, path)
-    start = time_mod.monotonic()
+    start = time.monotonic()
     deadline = start + 30
-    while engine.current_index() is not None and time_mod.monotonic() < deadline:
-        time_mod.sleep(0.02)
-    elapsed = time_mod.monotonic() - start
+    while engine.current_index() is not None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    elapsed = time.monotonic() - start
     engine.close()
     assert engine.current_index() is None
     assert 1.5 <= elapsed <= 6.0, f"2 s of audio drained in {elapsed:.1f}s"

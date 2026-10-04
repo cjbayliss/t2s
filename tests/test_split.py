@@ -49,11 +49,11 @@ def test_split_long_breaks_at_sentences() -> None:
         "Seven eight nine ten eleven twelve. "
         "Thirteen fourteen fifteen. "
     )
-    chunks = split_paragraphs(para, max_chars=40)
-    assert len(chunks) == 3
-    assert all(len(c) <= 40 for c in chunks)
-    assert " ".join(chunks) == para.strip()
-    assert split_paragraphs(para, max_chars=40) == chunks
+    paragraphs = split_paragraphs(para, max_chars=40)
+    assert len(paragraphs) == 3
+    assert all(len(paragraph) <= 40 for paragraph in paragraphs)
+    assert " ".join(paragraphs) == para.strip()
+    assert split_paragraphs(para, max_chars=40) == paragraphs
 
 
 def test_split_long_keeps_short_paragraph_whole() -> None:
@@ -63,15 +63,15 @@ def test_split_long_keeps_short_paragraph_whole() -> None:
 
 def test_split_long_overlong_sentence_stays_whole() -> None:
     para = "Word " * 100 + "end."
-    chunks = split_paragraphs(para, max_chars=50)
-    assert chunks == (para.strip(),)
+    paragraphs = split_paragraphs(para, max_chars=50)
+    assert paragraphs == (para.strip(),)
 
 
 def test_numbering_matches_paragraph_list() -> None:
     text = "A.\n\nB.\n\nC.\n\nD."
-    paras = split_paragraphs(text)
-    assert len(paras) == 4
-    assert paras[2] == "C."
+    paragraphs = split_paragraphs(text)
+    assert len(paragraphs) == 4
+    assert paragraphs[2] == "C."
 
 
 def test_pack_sentences_greedy_and_pure() -> None:
