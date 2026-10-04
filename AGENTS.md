@@ -37,17 +37,35 @@ gate every change must pass.
    (time, randomness, environment, device state) enters as an explicit
    parameter, never as a direct call buried in pure code.
 
+## Layout
+
+The package is split by purity; keep the boundary sharp when you edit.
+
+- `t2s/pure.py` — the value-to-value core: splitting, wrapping, cache
+  policy, the stream state machine, the application state machine (keys,
+  engine events, skip chains). It imports no effect machinery — no
+  threads, subprocesses, files, sockets, clocks, or environment.
+- `t2s/synth.py` — the synthesis cache and the prefetch worker thread.
+- `t2s/engines.py` — playback engines around the pure stream state, plus
+  the CoreAudio rate probe.
+- `t2s/app.py` — `App`, the effectful shell: it folds keypresses and
+  engine events through pure transitions and performs the effect values
+  they return. `Config`/`config_from_args`/`open_app` live here; all
+  construction effects (device probe, cache pruning, terminal setup)
+  are in `open_app`, never in `App.__init__`.
+- `t2s/cli.py` — argument parsing and `main`, the outermost edge.
+
 ## Tooling
 
 Both tools are configured in `pyproject.toml`; install with
 `uv sync --extra test` (or `.venv/bin/pip install -e .[test]` plus the
 `dev` group).
 
-- **ruff** — formats and lints everything (`t2s.py`, `tests/`). The rule
+- **ruff** — formats and lints everything (`t2s/`, `tests/`). The rule
   set pulls in isort, pyupgrade, bugbear, comprehensions, simplify,
   return, and perflint; fixes are preferred over suppressions, and a
   `noqa` needs a reason.
-- **mypy** — `strict = true` over `t2s.py` and `tests/`. Every function
+- **mypy** — `strict = true` over `t2s/` and `tests/`. Every function
   is fully annotated. The untyped `miniaudio` edge is contained with
   `Any`/`cast` and an `ignore_missing_imports` override; don't let
   `Any` spread beyond it.
@@ -55,7 +73,8 @@ Both tools are configured in `pyproject.toml`; install with
 ## Testing
 
 - Pure functions: plain pytest with value assertions (see
-  `tests/test_split.py`, `tests/test_wrap.py`).
+  `tests/test_split.py`, `tests/test_wrap.py`, and — for the whole
+  interactive logic, no pty needed — `tests/test_app_state.py`).
 - Effects: drive them through injected fakes (`tests/fake_say.py`,
   `tests/fake_play.py`, the `--player test` engine) and assert on
   captured outputs. Tests never touch real audio.

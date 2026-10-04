@@ -50,7 +50,7 @@ new device is ready.
 uv tool install .        # or: pipx install .
 ```
 
-Or run in place: `./t2s.py chapter.txt` (or `python3 t2s.py chapter.txt`).
+Or run from a checkout: `python3 -m t2s chapter.txt`.
 Without `miniaudio` installed, t2s falls back to playing each paragraph
 with `afplay` (small gaps between paragraphs).
 
@@ -106,6 +106,15 @@ file                  text file to read ('-' or omitted: standard input)
 python3 -m venv .venv && .venv/bin/pip install -e .[test]
 .venv/bin/python -m pytest -q
 ```
+
+The code is split by purity: `t2s/pure.py` is the value-to-value core
+(text splitting, wrapping, cache policy, the stream and application
+state machines) and imports no effect machinery; `t2s/synth.py`,
+`t2s/engines.py`, `t2s/app.py`, and `t2s/cli.py` are the effectful
+shells around it. The interactive logic is pure (`tests/test_app_state.py`
+exercises keys, engine events and skip chains as plain values), so the
+pty tests only have to check that the shell performs what the pure
+transitions decide.
 
 Tests never touch audio (one test plays 0.2 s of silence through the real
 device and is skipped if miniaudio is unavailable): `tests/fake_say.py`

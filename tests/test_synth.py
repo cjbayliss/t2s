@@ -8,14 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from t2s import (
-    CacheFile,
-    SynthesisError,
-    SynthWorker,
-    cache_key,
-    evictions,
-    prune_cache,
-)
+from t2s.pure import CacheFile, cache_key, evictions
+from t2s.synth import SynthesisError, SynthWorker, prune_cache
 
 FAKE_SAY = Path(__file__).resolve().parent / "fake_say.py"
 

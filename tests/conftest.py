@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-T2S = REPO / "t2s.py"
 FAKE_SAY_SRC = Path(__file__).resolve().parent / "fake_say.py"
 FAKE_PLAY_SRC = Path(__file__).resolve().parent / "fake_play.py"
 
@@ -84,16 +83,19 @@ def run_t2s(
 
     Binary capture + manual decode: text mode would apply universal-newline
     translation, corrupting any \\r in the captured output.  Always pass a
-    --cache-dir in args to keep the real user cache untouched.
+    --cache-dir in args to keep the real user cache untouched.  Runs via
+    `python -m t2s` with the repo on cwd, so no install is required.
     """
-    cmd = [sys.executable, str(T2S)]
+    cmd = [sys.executable, "-m", "t2s"]
     if fakes is not None:
         cmd += ["--say-bin", fakes.say_bin, "--play-bin", fakes.play_bin]
     cmd += args
     env = os.environ.copy()
     if env_extra:
         env.update(env_extra)
-    r = subprocess.run(cmd, input=input, capture_output=True, env=env, timeout=timeout)
+    r = subprocess.run(
+        cmd, input=input, capture_output=True, env=env, timeout=timeout, cwd=REPO
+    )
     return subprocess.CompletedProcess(
         r.args,
         r.returncode,
