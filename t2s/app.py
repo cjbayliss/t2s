@@ -13,9 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .engines import (
-    ChainEngine,
-    SubprocessEngine,
+    Engine,
     default_data_format,
+    engine_close,
+    engine_current_index,
+    engine_play,
+    engine_prime,
+    engine_stop_stream,
+    load_audio_library,
     make_engine,
 )
 from .pure import (
@@ -39,11 +44,18 @@ from .pure import (
     resolve_say_bin,
     wrap_offsets,
 )
-from .synth import SynthesisError, SynthWorker, prune_cache
-
-DIM = "\x1b[2m"
-RESET = "\x1b[0m"
-SHOW_CURSOR = "\x1b[0m\x1b[?25h"
+from .synth import (
+    SynthesisFailed,
+    SynthWorker,
+    clear_failure,
+    ensure,
+    make_worker,
+    path_for,
+    prune_cache,
+    set_cursor,
+    start_worker,
+    stop_worker,
+)
 
 
 @dataclass(frozen=True)
@@ -121,7 +133,7 @@ def config_from_args(args: Args, paragraphs: tuple[str, ...]) -> Config:
 @dataclass(frozen=True)
 class KeySource:
     fd: int
-    restore: list[int | list[bytes | int]]
+    restore: tuple[int | list[bytes | int], ...]
     close_fd: bool
 
 
@@ -136,7 +148,7 @@ def open_key_source() -> KeySource | None:
             return None
         close_fd = True
     try:
-        restore = termios.tcgetattr(fd)
+        restore = tuple(termios.tcgetattr(fd))
         tty.setcbreak(fd)
     except termios.error:
         if close_fd:
@@ -157,11 +169,13 @@ def open_app(config: Config) -> App:
     cache_dir = resolve_cache_dir(config.cache_dir, Path.home())
     cache_dir.mkdir(parents=True, exist_ok=True)
     prune_cache(cache_dir, config.cache_limit_mb)
-    synth_worker = SynthWorker(
+    synth_worker = make_worker(
         config.paragraphs, cache_keys, cache_dir, say_cmd, ahead=config.ahead
     )
     play_cmd = (resolve_play_bin(config.play_bin, env),)
-    engine = make_engine(config.player, play_cmd, config.gap_ms, env)
+    engine = make_engine(
+        config.player, play_cmd, config.gap_ms, env, audio=load_audio_library()
+    )
     return App(
         paragraphs=config.paragraphs,
         start_index=config.start_index,
@@ -173,160 +187,164 @@ def open_app(config: Config) -> App:
     )
 
 
+@dataclass(frozen=True)
 class App:
-    def __init__(
-        self,
-        *,
-        paragraphs: tuple[str, ...],
-        start_index: int,
-        width: int,
-        use_ansi: bool,
-        key_source: KeySource | None,
-        synth_worker: SynthWorker,
-        engine: ChainEngine | SubprocessEngine,
-    ) -> None:
-        self.paragraphs = paragraphs
-        self.start_index = start_index
-        self.width = width
-        self.use_ansi = use_ansi
-        self.key_source = key_source
-        self.synth_worker = synth_worker
-        self.engine = engine
+    paragraphs: tuple[str, ...]
+    start_index: int
+    width: int
+    use_ansi: bool
+    key_source: KeySource | None
+    synth_worker: SynthWorker
+    engine: Engine
 
-    def _interpret(self, state: AppState, effects: Effects) -> AppState:
-        pending: deque[Effect] = deque(effects)
-        while pending:
-            state, produced = self._perform(state, pending.popleft())
-            pending.extend(produced)
-        return state
 
-    def _perform(self, state: AppState, effect: Effect) -> tuple[AppState, Effects]:
-        match effect:
-            case TryPlay(index, note):
-                return apply_play_outcome(state, index, self._try_play(index, note))
-            case StopStream():
-                self.engine.stop_stream()
-            case ClearFailure(index):
-                self.synth_worker.clear_failure(index)
-            case SyncTo(index):
-                self._sync_to(index)
-            case Note(text):
-                self._note(text)
-            case Warn(text):
-                self._warn(text)
-        return state, ()
+def interpret(app: App, state: AppState, effects: Effects) -> AppState:
+    pending: deque[Effect] = deque(effects)
+    while pending:
+        state, produced = perform(app, state, pending.popleft())
+        pending.extend(produced)
+    return state
 
-    def _try_play(self, index: int, note: str | None = None) -> PlayOutcome:
-        self.engine.stop_stream()
-        self.synth_worker.set_cursor(index)
-        self.show_paragraph(index, note)
-        try:
-            path = self.synth_worker.ensure(index)
-        except SynthesisError as exc:
-            msg = f"! could not render paragraph: {exc.detail}"
-            if self.key_source is not None:
-                self._warn(msg)
-                self._note("space: retry · n/p: paragraph · q: quit")
+
+def perform(app: App, state: AppState, effect: Effect) -> tuple[AppState, Effects]:
+    match effect:
+        case TryPlay(index, note):
+            return apply_play_outcome(state, index, try_play(app, index, note))
+        case StopStream():
+            engine_stop_stream(app.engine)
+        case ClearFailure(index):
+            clear_failure(app.synth_worker, index)
+        case SyncTo(index):
+            sync_to(app, index)
+        case Note(text):
+            emit_note(app, text)
+        case Warn(text):
+            emit_warn(app, text)
+    return state, ()
+
+
+def try_play(app: App, index: int, note_text: str | None = None) -> PlayOutcome:
+    engine_stop_stream(app.engine)
+    set_cursor(app.synth_worker, index)
+    show_paragraph(app, index, note_text)
+    match ensure(app.synth_worker, index):
+        case SynthesisFailed(detail=detail):
+            msg = f"! could not render paragraph: {detail}"
+            if app.key_source is not None:
+                emit_warn(app, msg)
+                emit_note(app, "space: retry · n/p: paragraph · q: quit")
                 return "paused"
-            self._warn(msg + " — continuing with next paragraph")
+            emit_warn(app, msg + " — continuing with next paragraph")
             return "failed"
-        self.engine.play(index, path)
-        self._prime_next(index)
-        return "playing"
+        case path:
+            engine_play(app.engine, index, path)
+            prime_next(app, index)
+            return "playing"
 
-    def _prime_next(self, index: int) -> None:
-        next_index = index + 1
-        if next_index < len(self.paragraphs):
-            path = self.synth_worker.path_for(next_index)
-            if path.exists():
-                self.engine.prime(next_index, path)
 
-    def _sync_to(self, index: int) -> None:
-        self.synth_worker.set_cursor(index)
-        self.show_paragraph(index)
-        self._prime_next(index)
+def prime_next(app: App, index: int) -> None:
+    next_index = index + 1
+    if next_index < len(app.paragraphs):
+        path = path_for(app.synth_worker, next_index)
+        if path.exists():
+            engine_prime(app.engine, next_index, path)
 
-    def run(self) -> int:
-        state = AppState(
-            index=self.start_index,
-            n_paragraphs=len(self.paragraphs),
-            interactive=self.key_source is not None,
-        )
-        self.synth_worker.start()
+
+def sync_to(app: App, index: int) -> None:
+    set_cursor(app.synth_worker, index)
+    show_paragraph(app, index)
+    prime_next(app, index)
+
+
+def run(app: App) -> int:
+    state = AppState(
+        index=app.start_index,
+        n_paragraphs=len(app.paragraphs),
+        interactive=app.key_source is not None,
+    )
+    start_worker(app.synth_worker)
+    try:
+        state = interpret(app, state, (TryPlay(state.index),))
+        while state.running:
+            state = tick(app, state)
+    except KeyboardInterrupt:
+        emit_note(app, "· interrupted")
+    finally:
+        restore_terminal(app)
+        engine_stop_stream(app.engine)
+        engine_close(app.engine)
+        stop_worker(app.synth_worker)
+        if app.use_ansi:
+            sys.stdout.write("\x1b[0m\x1b[?25h")
+            sys.stdout.flush()
+    return 0
+
+
+def restore_terminal(app: App) -> None:
+    key_source = app.key_source
+    if key_source is None:
+        return
+    with contextlib.suppress(termios.error):
+        termios.tcsetattr(key_source.fd, termios.TCSADRAIN, list(key_source.restore))
+    if key_source.close_fd:
+        with contextlib.suppress(OSError):
+            os.close(key_source.fd)
+
+
+def tick(app: App, state: AppState) -> AppState:
+    return drain_events(app, poll_keys(app, state))
+
+
+def poll_keys(app: App, state: AppState) -> AppState:
+    key_source = app.key_source
+    fds: list[int] = [key_source.fd] if key_source is not None else []
+    try:
+        ready, _, _ = select.select(fds, [], [], 0.05)
+    except (OSError, ValueError):
+        ready = []
+    if key_source is not None and key_source.fd in ready:
         try:
-            state = self._interpret(state, (TryPlay(state.index),))
-            while state.running:
-                state = self._tick(state)
-        except KeyboardInterrupt:
-            self._note("· interrupted")
-        finally:
-            self._restore_terminal()
-            self.engine.stop_stream()
-            self.engine.close()
-            self.synth_worker.stop()
-            if self.use_ansi:
-                sys.stdout.write(SHOW_CURSOR)
-                sys.stdout.flush()
-        return 0
+            data = os.read(key_source.fd, 256)
+        except OSError:
+            data = b""
+        for key in data.decode("utf-8", "ignore"):
+            next_state, effects = handle_key(
+                state, key, engine_current_index(app.engine)
+            )
+            state = interpret(app, next_state, effects)
+    return state
 
-    def _restore_terminal(self) -> None:
-        key_source = self.key_source
-        if key_source is None:
-            return
-        with contextlib.suppress(termios.error):
-            termios.tcsetattr(key_source.fd, termios.TCSADRAIN, key_source.restore)
-        if key_source.close_fd:
-            with contextlib.suppress(OSError):
-                os.close(key_source.fd)
 
-    def _tick(self, state: AppState) -> AppState:
-        return self._drain_events(self._poll_keys(state))
-
-    def _poll_keys(self, state: AppState) -> AppState:
-        key_source = self.key_source
-        fds: list[int] = [key_source.fd] if key_source is not None else []
+def drain_events(app: App, state: AppState) -> AppState:
+    while True:
         try:
-            ready, _, _ = select.select(fds, [], [], 0.05)
-        except (OSError, ValueError):
-            ready = []
-        if key_source is not None and key_source.fd in ready:
-            try:
-                data = os.read(key_source.fd, 256)
-            except OSError:
-                data = b""
-            for key in data.decode("utf-8", "ignore"):
-                next_state, effects = handle_key(
-                    state, key, self.engine.current_index()
-                )
-                state = self._interpret(next_state, effects)
-        return state
+            event = app.engine.events.get_nowait()
+        except queue.Empty:
+            return state
+        next_state, effects = handle_engine_event(state, event)
+        state = interpret(app, next_state, effects)
 
-    def _drain_events(self, state: AppState) -> AppState:
-        while True:
-            try:
-                event = self.engine.events.get_nowait()
-            except queue.Empty:
-                return state
-            next_state, effects = handle_engine_event(state, event)
-            state = self._interpret(next_state, effects)
 
-    def show_paragraph(self, index: int, note: str | None = None) -> None:
-        header = f"── ¶ {index + 1}/{len(self.paragraphs)}"
-        if note:
-            header += f" {note}"
-        header += " ──"
-        print(self._dim(header))
-        for line, _ in wrap_offsets(self.paragraphs[index], self.width):
-            print(line)
-        sys.stdout.flush()
+def show_paragraph(app: App, index: int, note_text: str | None = None) -> None:
+    header = f"── ¶ {index + 1}/{len(app.paragraphs)}"
+    if note_text:
+        header += f" {note_text}"
+    header += " ──"
+    print(dim(app, header))
+    for line, _ in wrap_offsets(app.paragraphs[index], app.width):
+        print(line)
+    sys.stdout.flush()
 
-    def _dim(self, text: str) -> str:
-        return f"{DIM}{text}{RESET}" if self.use_ansi else text
 
-    def _note(self, text: str) -> None:
-        print(self._dim(text))
-        sys.stdout.flush()
+def dim(app: App, text: str) -> str:
+    return f"\x1b[2m{text}\x1b[0m" if app.use_ansi else text
 
-    def _warn(self, text: str) -> None:
-        print(text, file=sys.stderr)
-        sys.stderr.flush()
+
+def emit_note(app: App, text: str) -> None:
+    print(dim(app, text))
+    sys.stdout.flush()
+
+
+def emit_warn(app: App, text: str) -> None:
+    print(text, file=sys.stderr)
+    sys.stderr.flush()

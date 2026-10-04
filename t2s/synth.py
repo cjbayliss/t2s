@@ -4,16 +4,10 @@ import contextlib
 import subprocess
 import threading
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .pure import CacheFile, evictions, prefetch_window
-
-
-class SynthesisError(Exception):
-    def __init__(self, index: int, detail: str) -> None:
-        super().__init__(f"paragraph {index + 1}: {detail}")
-        self.index = index
-        self.detail = detail
 
 
 def prune_cache(cache_dir: Path, limit_mb: float) -> None:
@@ -34,100 +28,134 @@ def prune_cache(cache_dir: Path, limit_mb: float) -> None:
         path.unlink(missing_ok=True)
 
 
-class SynthWorker(threading.Thread):
-    def __init__(
-        self,
-        paragraphs: Sequence[str],
-        keys: Sequence[str],
-        cache_dir: Path,
-        say_cmd: Sequence[str],
-        ahead: int = 3,
-    ) -> None:
-        super().__init__(daemon=True)
-        self._paragraphs = paragraphs
-        self._keys = keys
-        self.cache_dir = cache_dir
-        self._say_cmd = say_cmd
-        self.ahead = max(0, ahead)
-        self._cond = threading.Condition()
-        self._cursor = 0
-        self._failed: dict[int, str] = {}
-        self._stop_flag = False
+@dataclass
+class WorkerCell:
+    cond: threading.Condition
+    cursor: int
+    failed: dict[int, str]
+    stop_flag: bool
 
-    def path_for(self, index: int) -> Path:
-        return self.cache_dir / f"{self._keys[index]}.wav"
 
-    def set_cursor(self, index: int) -> None:
-        with self._cond:
-            if self._cursor != index:
-                self._cursor = index
-                self._cond.notify_all()
+@dataclass(frozen=True)
+class SynthWorker:
+    paragraphs: tuple[str, ...]
+    keys: tuple[str, ...]
+    cache_dir: Path
+    say_cmd: tuple[str, ...]
+    ahead: int
+    cell: WorkerCell
 
-    def clear_failure(self, index: int) -> None:
-        with self._cond:
-            if self._failed.pop(index, None) is not None:
-                self._cond.notify_all()
 
-    def ensure(self, index: int) -> Path:
-        with self._cond:
-            while True:
-                path = self.path_for(index)
-                if path.exists():
-                    return path
-                if index in self._failed:
-                    raise SynthesisError(index, self._failed[index])
-                if self._stop_flag:
-                    raise SynthesisError(index, "shutting down")
-                self._cond.wait(0.1)
+def make_worker(
+    paragraphs: Sequence[str],
+    keys: Sequence[str],
+    cache_dir: Path,
+    say_cmd: Sequence[str],
+    ahead: int = 3,
+) -> SynthWorker:
+    return SynthWorker(
+        paragraphs=tuple(paragraphs),
+        keys=tuple(keys),
+        cache_dir=cache_dir,
+        say_cmd=tuple(say_cmd),
+        ahead=max(0, ahead),
+        cell=WorkerCell(
+            cond=threading.Condition(), cursor=0, failed={}, stop_flag=False
+        ),
+    )
 
-    def stop(self) -> None:
-        with self._cond:
-            self._stop_flag = True
-            self._cond.notify_all()
 
-    def run(self) -> None:
+def path_for(worker: SynthWorker, index: int) -> Path:
+    return worker.cache_dir / f"{worker.keys[index]}.wav"
+
+
+def set_cursor(worker: SynthWorker, index: int) -> None:
+    with worker.cell.cond:
+        if worker.cell.cursor != index:
+            worker.cell.cursor = index
+            worker.cell.cond.notify_all()
+
+
+def clear_failure(worker: SynthWorker, index: int) -> None:
+    with worker.cell.cond:
+        if worker.cell.failed.pop(index, None) is not None:
+            worker.cell.cond.notify_all()
+
+
+@dataclass(frozen=True)
+class SynthesisFailed:
+    index: int
+    detail: str
+
+
+def ensure(worker: SynthWorker, index: int) -> Path | SynthesisFailed:
+    with worker.cell.cond:
         while True:
-            with self._cond:
-                if self._stop_flag:
-                    return
-                target = self._next_missing()
-                if target is None:
-                    self._cond.wait(0.1)
-                    continue
-            self._render(target)
+            path = path_for(worker, index)
+            if path.exists():
+                return path
+            if index in worker.cell.failed:
+                return SynthesisFailed(index, worker.cell.failed[index])
+            if worker.cell.stop_flag:
+                return SynthesisFailed(index, "shutting down")
+            worker.cell.cond.wait(0.1)
 
-    def _next_missing(self) -> int | None:
-        for index in prefetch_window(self._cursor, self.ahead, len(self._keys)):
-            if index not in self._failed and not self.path_for(index).exists():
-                return index
-        return None
 
-    def _render(self, index: int) -> None:
-        path = self.path_for(index)
-        part_path = path.with_name(path.name + ".part")
-        proc = subprocess.Popen(
-            (*self._say_cmd, "-o", str(part_path)),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        stderr_bytes = b""
-        stdin = proc.stdin
-        if stdin is not None:
-            with contextlib.suppress(BrokenPipeError, OSError):
-                stdin.write(self._paragraphs[index].encode("utf-8"))
-                stdin.close()
-        stderr = proc.stderr
-        if stderr is not None:
-            with contextlib.suppress(OSError):
-                stderr_bytes = stderr.read() or b""
-        exit_code = proc.wait()
-        succeeded = exit_code == 0 and part_path.exists()
-        if succeeded:
-            part_path.replace(path)
-        with self._cond:
-            if not succeeded:
-                self._failed[index] = " ".join(
-                    stderr_bytes.decode("utf-8", "replace").split()
-                )[:200]
-            self._cond.notify_all()
+def stop_worker(worker: SynthWorker) -> None:
+    with worker.cell.cond:
+        worker.cell.stop_flag = True
+        worker.cell.cond.notify_all()
+
+
+def start_worker(worker: SynthWorker) -> None:
+    threading.Thread(target=worker_run, args=(worker,), daemon=True).start()
+
+
+def next_missing(worker: SynthWorker) -> int | None:
+    for index in prefetch_window(worker.cell.cursor, worker.ahead, len(worker.keys)):
+        if index not in worker.cell.failed and not path_for(worker, index).exists():
+            return index
+    return None
+
+
+def worker_run(worker: SynthWorker) -> None:
+    while True:
+        with worker.cell.cond:
+            if worker.cell.stop_flag:
+                return
+            target = next_missing(worker)
+            if target is None:
+                worker.cell.cond.wait(0.1)
+                continue
+        render(worker, target)
+
+
+def render(worker: SynthWorker, index: int) -> None:
+    path = path_for(worker, index)
+    part_path = path.with_name(path.name + ".part")
+    proc = subprocess.Popen(
+        (*worker.say_cmd, "-o", str(part_path)),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    stderr_bytes = b""
+    stdin = proc.stdin
+    if stdin is not None:
+        with contextlib.suppress(BrokenPipeError, OSError):
+            stdin.write(worker.paragraphs[index].encode("utf-8"))
+            stdin.close()
+    stderr = proc.stderr
+    if stderr is not None:
+        with contextlib.suppress(OSError):
+            stderr_bytes = stderr.read() or b""
+    exit_code = proc.wait()
+    succeeded = exit_code == 0 and part_path.exists()
+    if succeeded:
+        part_path.replace(path)
+    with worker.cell.cond:
+        if not succeeded:
+            worker.cell.failed[index] = " ".join(
+                stderr_bytes.decode("utf-8", "replace").split()
+            )[:200]
+        worker.cell.cond.notify_all()

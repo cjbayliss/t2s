@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .app import args_from_namespace, config_from_args, open_app
+from .app import args_from_namespace, config_from_args, open_app, run
 from .pure import split_paragraphs
 
 
@@ -140,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        return open_app(config_from_args(args, paragraphs)).run()
+        return run(open_app(config_from_args(args, paragraphs)))
     except BrokenPipeError:
         return 0
     except KeyboardInterrupt:
