@@ -10,9 +10,9 @@ def main() -> int:
     log_path = os.environ.get("FAKE_PLAY_LOG")
     count = 0
     if log_path:
-        with open(log_path, "a") as log_file:
+        with open(log_path, "a", encoding="utf-8") as log_file:
             log_file.write(path + "\n")
-        with open(log_path) as log_file:
+        with open(log_path, encoding="utf-8") as log_file:
             count = sum(1 for line in log_file if line.strip())
 
     fail_at = os.environ.get("FAKE_PLAY_FAIL_AT")
