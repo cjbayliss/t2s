@@ -5,6 +5,7 @@ from t2s.app import args_from_namespace
 from t2s.pure import (
     build_say_cmd,
     engine_choice,
+    gap_supported,
     resolve_cache_dir,
     resolve_play_bin,
     resolve_say_bin,
@@ -129,6 +130,14 @@ def test_engine_choice_matrix() -> None:
     assert engine_choice("miniaudio", False) == "missing-miniaudio"
     assert engine_choice("auto", True) == "miniaudio"
     assert engine_choice("auto", False) == "afplay-fallback"
+
+
+def test_gap_support_follows_engine_choice() -> None:
+    assert gap_supported("miniaudio")
+    assert gap_supported("test")
+    assert not gap_supported("afplay")
+    assert not gap_supported("afplay-fallback")
+    assert not gap_supported("missing-miniaudio")
 
 
 def test_build_say_cmd_includes_only_given_options() -> None:

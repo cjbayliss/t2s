@@ -87,7 +87,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         metavar="MS",
-        help="silence between paragraphs in milliseconds (default: 0)",
+        help="silence between paragraphs in milliseconds (default: 0; "
+        "miniaudio engine only)",
     )
     parser.add_argument(
         "--data-format",

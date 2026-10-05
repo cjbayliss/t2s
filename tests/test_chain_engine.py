@@ -18,6 +18,7 @@ from t2s.engines import (
     ensure_device,
     load_audio_library,
     load_miniaudio,
+    make_engine,
     make_stream_engine,
     pull,
     pull_frames,
@@ -327,6 +328,19 @@ def test_device_open_failure_is_translated(tmp_path: Path) -> None:
     engine = make_stream_engine(audio=AudioLibrary(module=fake_nodevice_module()))
     with pytest.raises(RuntimeError, match="no output device"):
         ensure_device(engine, path)
+
+
+def test_gap_warning_fires_only_for_afplay(capsys: pytest.CaptureFixture[str]) -> None:
+    make_engine("afplay", ("afplay",), gap_ms=150)
+    assert "--gap" in capsys.readouterr().err
+    make_engine("afplay", ("afplay",), gap_ms=0)
+    assert capsys.readouterr().err == ""
+    make_engine("test", (), gap_ms=150)
+    assert capsys.readouterr().err == ""
+    make_engine("auto", ("afplay",), gap_ms=150, audio=load_audio_library())
+    assert capsys.readouterr().err == ""
+    make_engine("auto", ("afplay",), gap_ms=150, audio=None)
+    assert "--gap" in capsys.readouterr().err
 
 
 def test_gap_inserts_silence_between_paragraphs(tmp_path: Path) -> None:

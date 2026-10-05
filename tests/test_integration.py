@@ -206,7 +206,15 @@ def test_gap_option_preserves_order(fakes: Fakes, tmp_path: Path) -> None:
         fakes, tmp_path, DOC, "--gap", "150", "--player", "test", env_extra=env
     )
     assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
     assert texts_played(fakes.say_log, play_log) == PARAGRAPHS
+
+
+def test_gap_with_afplay_warns_but_still_reads(fakes: Fakes, tmp_path: Path) -> None:
+    result, _ = run_doc(fakes, tmp_path, DOC, "--gap", "150", "--player", "afplay")
+    assert result.returncode == 0, result.stderr
+    assert "--gap is only supported by the miniaudio engine" in result.stderr
+    assert fakes.played_texts() == PARAGRAPHS
 
 
 def test_width_flag(fakes: Fakes, tmp_path: Path) -> None:

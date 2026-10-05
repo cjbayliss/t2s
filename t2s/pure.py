@@ -483,6 +483,10 @@ def engine_choice(player: str, have_miniaudio: bool) -> EngineChoice:
     return "afplay-fallback"
 
 
+def gap_supported(choice: EngineChoice) -> bool:
+    return choice in ("miniaudio", "test")
+
+
 def resolve_say_bin(explicit: str | None, env: Mapping[str, str]) -> str:
     return explicit or env.get("T2S_SAY_BIN") or "say"
 
