@@ -73,7 +73,8 @@ file                   text file to read ('-' or omitted: standard input)
 --cache-dir PATH       audio cache directory (default: ~/Library/Caches/t2s)
 --cache-limit-mb MB    prune the cache when larger than this
                        (default: 256; 0 = unlimited)
---gap MS               silence between paragraphs in milliseconds (default: 0)
+--gap MS               silence between paragraphs in milliseconds (default: 0;
+                       miniaudio engine only)
 --data-format FMT      synthesis format for say, e.g. LEI16@48000
                        (default: LEI16 at the output device's native rate)
 --say-bin PATH         say binary to run (default: say, or $T2S_SAY_BIN)

@@ -21,6 +21,7 @@ from .pure import (
     engine_choice,
     frames_to_bytes,
     gap_bytes,
+    gap_supported,
     nominal_output_rate,
     stream_next_chunk,
     stream_play,
@@ -467,6 +468,11 @@ def make_engine(
         print(
             "t2s: miniaudio is not installed - falling back to afplay "
             "(pip install miniaudio for gapless playback)",
+            file=sys.stderr,
+        )
+    if gap_ms > 0 and not gap_supported(choice):
+        print(
+            "t2s: --gap is only supported by the miniaudio engine - ignoring",
             file=sys.stderr,
         )
     if choice == "miniaudio":
