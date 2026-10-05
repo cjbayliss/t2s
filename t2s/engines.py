@@ -156,6 +156,7 @@ class StreamEngine:
     drain: bool
     audio: AudioLibrary | None
     cell: StreamCell
+    prime_async: bool = False
     load: Callable[[StreamEngine, Path], bytes] = load_wav
 
 
@@ -171,6 +172,7 @@ def make_stream_engine(
     log_path: str | None = None,
     drain: bool = False,
     audio: AudioLibrary | None = None,
+    prime_async: bool = False,
 ) -> StreamEngine:
     return StreamEngine(
         lock=threading.Lock(),
@@ -190,6 +192,7 @@ def make_stream_engine(
             device=None,
             drain_thread=None,
         ),
+        prime_async=prime_async,
         load=load,
     )
 
@@ -297,13 +300,23 @@ def stream_engine_play(engine: StreamEngine, index: int, path: Path) -> None:
         start_drain(engine)
 
 
-def stream_engine_prime(engine: StreamEngine, index: int, path: Path) -> None:
+def prime_now(engine: StreamEngine, index: int, path: Path) -> None:
     try:
         data = engine.load(engine, path)
     except load_failures():
         return
     with engine.lock:
         engine.cell.stream = stream_prime(engine.cell.stream, index, path, data)
+
+
+def stream_engine_prime(engine: StreamEngine, index: int, path: Path) -> None:
+    if not engine.prime_async:
+        prime_now(engine, index, path)
+        return
+    with engine.lock:
+        if index in engine.cell.stream.sources:
+            return
+    threading.Thread(target=prime_now, args=(engine, index, path), daemon=True).start()
 
 
 def stream_engine_stop_stream(engine: StreamEngine) -> None:
@@ -476,7 +489,7 @@ def make_engine(
             file=sys.stderr,
         )
     if choice == "miniaudio":
-        return make_stream_engine(gap_ms=gap_ms, audio=audio)
+        return make_stream_engine(gap_ms=gap_ms, audio=audio, prime_async=True)
     if choice == "test":
         return make_test_engine(gap_ms, env)
     return make_proc_engine(play_cmd)

@@ -1,5 +1,6 @@
 import functools
 import queue
+import time
 import wave
 from pathlib import Path
 from types import SimpleNamespace
@@ -341,6 +342,75 @@ def test_gap_warning_fires_only_for_afplay(capsys: pytest.CaptureFixture[str]) -
     assert capsys.readouterr().err == ""
     make_engine("auto", ("afplay",), gap_ms=150, audio=None)
     assert "--gap" in capsys.readouterr().err
+
+
+def make_delay_engine(delay: float, calls: list[Path]) -> StreamEngine:
+    def load(engine: StreamEngine, path: Path) -> bytes:
+        calls.append(path)
+        time.sleep(delay)
+        return path.read_bytes()
+
+    return make_stream_engine(load=load, chunk_bytes=2, prime_async=True)
+
+
+def wait_for_source(engine: StreamEngine, index: int) -> None:
+    deadline = time.monotonic() + 2
+    while index not in engine.cell.stream.sources and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert index in engine.cell.stream.sources
+
+
+def test_async_prime_returns_before_decode(tmp_path: Path) -> None:
+    second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
+    engine = make_delay_engine(0.2, [])
+    started = time.monotonic()
+    engine_prime(engine, 1, second)
+    assert time.monotonic() - started < 0.1
+    assert 1 not in engine.cell.stream.sources
+    wait_for_source(engine, 1)
+    assert engine_current_index(engine) is None
+
+
+def test_async_prime_chains_when_decode_finishes_in_time(tmp_path: Path) -> None:
+    first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 20)
+    second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
+    engine = make_delay_engine(0.02, [])
+    engine_play(engine, 0, first)
+    engine_prime(engine, 1, second)
+    wait_for_source(engine, 1)
+    chunks = drain(engine, 22)
+    assert b"".join(chunks) == (b"\x01\x02" * 20) + (b"\x03\x04" * 2)
+    assert events(engine) == [StreamFinished(0, True), StreamChained(1)]
+
+
+def test_async_prime_losing_race_ends_unchained(tmp_path: Path) -> None:
+    first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 2)
+    second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
+    engine = make_delay_engine(0.3, [])
+    engine_play(engine, 0, first)
+    engine_prime(engine, 1, second)
+    chunks = drain(engine, 3)
+    assert chunks[:2] == [b"\x01\x02", b"\x01\x02"]
+    assert chunks[2] == b"\x00\x00"
+    assert events(engine) == [StreamFinished(0, False)]
+
+
+def test_async_prime_skips_loaded_source(tmp_path: Path) -> None:
+    second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
+    calls: list[Path] = []
+    engine = make_delay_engine(0.05, calls)
+    engine_prime(engine, 1, second)
+    wait_for_source(engine, 1)
+    engine_prime(engine, 1, second)
+    time.sleep(0.15)
+    assert calls == [second]
+    assert 1 in engine.cell.stream.sources
+
+
+def test_production_engine_primes_async() -> None:
+    engine = make_engine("auto", ("afplay",), audio=load_audio_library())
+    assert isinstance(engine, StreamEngine)
+    assert engine.prime_async
 
 
 def test_gap_inserts_silence_between_paragraphs(tmp_path: Path) -> None:
