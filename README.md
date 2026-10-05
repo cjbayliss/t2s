@@ -91,3 +91,12 @@ file                   text file to read ('-' or omitted: standard input)
 | -------------- | ----------------------------------- |
 | `T2S_SAY_BIN`  | default for `--say-bin`             |
 | `T2S_PLAY_BIN` | default for `--play-bin`            |
+
+### Exit codes
+
+| Code | Meaning                                                            |
+| ---- | ------------------------------------------------------------------ |
+| 0    | success                                                            |
+| 1    | finished, but one or more paragraphs could not be rendered or played |
+| 2    | usage error (bad arguments, unreadable file, no input text)         |
+| 130  | interrupted with ^C                                                |

@@ -272,12 +272,15 @@ def run(app: App) -> int:
         interactive=app.key_source is not None,
     )
     start_worker(app.synth_worker)
+    code = 0
     try:
         state = interpret(app, state, (TryPlay(state.index),))
         while state.running:
             state = tick(app, state)
+        code = 1 if state.had_errors else 0
     except KeyboardInterrupt:
         emit_note(app, "interrupted")
+        code = 130
     finally:
         restore_terminal(app)
         engine_stop_stream(app.engine)
@@ -286,7 +289,7 @@ def run(app: App) -> int:
         if app.use_ansi:
             sys.stdout.write("\x1b[0m\x1b[?25h")
             sys.stdout.flush()
-    return 0
+    return code
 
 
 def restore_terminal(app: App) -> None:
