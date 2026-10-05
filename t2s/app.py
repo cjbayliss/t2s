@@ -37,6 +37,7 @@ from .pure import (
     apply_play_outcome,
     build_say_cmd,
     cache_key,
+    decode_chunk,
     handle_engine_event,
     handle_key,
     resolve_cache_dir,
@@ -130,11 +131,17 @@ def config_from_args(args: Args, paragraphs: tuple[str, ...]) -> Config:
     )
 
 
+@dataclass
+class KeyCell:
+    pending: bytes
+
+
 @dataclass(frozen=True)
 class KeySource:
     fd: int
     restore: tuple[int | list[bytes | int], ...]
     close_fd: bool
+    cell: KeyCell
 
 
 def open_key_source() -> KeySource | None:
@@ -154,7 +161,9 @@ def open_key_source() -> KeySource | None:
         if close_fd:
             os.close(fd)
         return None
-    return KeySource(fd=fd, restore=restore, close_fd=close_fd)
+    return KeySource(
+        fd=fd, restore=restore, close_fd=close_fd, cell=KeyCell(pending=b"")
+    )
 
 
 def open_app(config: Config) -> App:
@@ -307,7 +316,8 @@ def poll_keys(app: App, state: AppState) -> AppState:
             data = os.read(key_source.fd, 256)
         except OSError:
             data = b""
-        for key in data.decode("utf-8", "ignore"):
+        text, key_source.cell.pending = decode_chunk(key_source.cell.pending, data)
+        for key in text:
             next_state, effects = handle_key(
                 state, key, engine_current_index(app.engine)
             )
