@@ -101,3 +101,12 @@ file                   text file to read ('-' or omitted: standard input)
 | 1    | finished, but one or more paragraphs could not be rendered or played |
 | 2    | usage error (bad arguments, unreadable file, no input text)         |
 | 130  | interrupted with ^C                                                |
+
+### Shared cache
+
+All t2s runs share one synthesis cache (`~/Library/Caches/t2s` unless
+`--cache-dir` says otherwise) and each startup prunes it to
+`--cache-limit-mb`. With several instances running at once, one instance can
+prune a paragraph another is about to play; t2s treats that like any other
+playback failure - it pauses for a retry when interactive, or skips the
+paragraph and keeps going when piped.
