@@ -356,13 +356,13 @@ def proc_engine_play(engine: ProcEngine, index: int, path: Path) -> None:
 
 
 def watch_proc(engine: ProcEngine, index: int, proc: subprocess.Popen[bytes]) -> None:
+    stderr = proc.stderr.read() if proc.stderr is not None else b""
     exit_code = proc.wait()
     if engine.cell.suppress_report:
         return
     if exit_code == 0:
         engine.events.put(StreamFinished(index, False))
     else:
-        stderr = proc.stderr.read() if proc.stderr is not None else b""
         tail = " ".join(stderr.decode("utf-8", "replace").split())[:200]
         engine.events.put(
             StreamCrashed(index, f"player exited with code {exit_code}: {tail}")
