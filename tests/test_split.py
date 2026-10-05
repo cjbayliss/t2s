@@ -1,9 +1,47 @@
+from functools import reduce
+
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
 from t2s.pure import (
     pack_sentences,
     split_long_paragraph,
     split_paragraphs,
     split_sentences,
 )
+
+SENTENCES = st.lists(st.text(alphabet="ab ck.,", min_size=1, max_size=12), max_size=20)
+
+
+def reference_pack(sentences: tuple[str, ...], max_chars: int) -> tuple[str, ...]:
+    def pack(packed: tuple[str, ...], sentence: str) -> tuple[str, ...]:
+        if not packed:
+            return (sentence,)
+        current = packed[-1]
+        if len(current) + 1 + len(sentence) > max_chars:
+            return (*packed, sentence)
+        return (*packed[:-1], f"{current} {sentence}")
+
+    return reduce(pack, sentences, ())
+
+
+@settings(max_examples=50)
+@given(SENTENCES, st.integers(0, 40))
+def test_pack_sentences_matches_reference(sentences: list[str], max_chars: int) -> None:
+    packed = tuple(sentences)
+    assert pack_sentences(packed, max_chars) == reference_pack(packed, max_chars)
+
+
+@settings(max_examples=50)
+@given(SENTENCES, st.integers(1, 40))
+def test_pack_sentences_preserves_join_and_limit(
+    sentences: list[str], max_chars: int
+) -> None:
+    packed = pack_sentences(tuple(sentences), max_chars)
+    assert " ".join(packed) == " ".join(sentences)
+    inputs = set(sentences)
+    for group in packed:
+        assert len(group) <= max_chars or group in inputs
 
 
 def test_split_long_with_nonpositive_limit_keeps_text_whole() -> None:

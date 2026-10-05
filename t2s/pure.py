@@ -4,7 +4,6 @@ import hashlib
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from functools import reduce
 from itertools import accumulate, chain
 from operator import attrgetter
 from pathlib import Path
@@ -37,15 +36,20 @@ def split_sentences(text: str) -> tuple[str, ...]:
 
 def pack_sentences(sentences: Sequence[str], max_chars: int) -> tuple[str, ...]:
 
-    def pack(packed: tuple[str, ...], sentence: str) -> tuple[str, ...]:
-        if not packed:
-            return (sentence,)
-        current = packed[-1]
-        if len(current) + 1 + len(sentence) > max_chars:
-            return (*packed, sentence)
-        return (*packed[:-1], f"{current} {sentence}")
+    def groups() -> Iterator[str]:
+        current = ""
+        for sentence in sentences:
+            if not current:
+                current = sentence
+            elif len(current) + 1 + len(sentence) > max_chars:
+                yield current
+                current = sentence
+            else:
+                current = f"{current} {sentence}"
+        if current:
+            yield current
 
-    return reduce(pack, sentences, ())
+    return tuple(groups())
 
 
 def split_long_paragraph(text: str, max_chars: int) -> tuple[str, ...]:
