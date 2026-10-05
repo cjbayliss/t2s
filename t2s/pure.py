@@ -91,6 +91,40 @@ def wrap_offsets(text: str, width: int) -> tuple[tuple[str, int], ...]:
     return tuple(lines()) or (("", 0),)
 
 
+def _is_continuation(byte: int) -> bool:
+    return 0x80 <= byte <= 0xBF
+
+
+def _sequence_length(lead: int) -> int:
+    if lead < 0x80:
+        return 1
+    if 0xC2 <= lead <= 0xDF:
+        return 2
+    if 0xE0 <= lead <= 0xEF:
+        return 3
+    if 0xF0 <= lead <= 0xF4:
+        return 4
+    return 0
+
+
+def split_partial(blob: bytes) -> tuple[bytes, bytes]:
+    index = len(blob)
+    while index > 0 and len(blob) - index < 3 and _is_continuation(blob[index - 1]):
+        index -= 1
+    if index == 0:
+        return blob, b""
+    start = index - 1
+    want = _sequence_length(blob[start])
+    if want == 0 or len(blob) - start >= want:
+        return blob, b""
+    return blob[:start], blob[start:]
+
+
+def decode_chunk(pending: bytes, data: bytes) -> tuple[str, bytes]:
+    head, hold = split_partial(pending + data)
+    return head.decode("utf-8", "ignore"), hold
+
+
 def cache_key(text: str, voice: str | None, rate: int | None, data_format: str) -> str:
     material = f"{voice or ''}|{rate or ''}|{data_format}|{text}"
     return hashlib.sha1(material.encode("utf-8")).hexdigest()
