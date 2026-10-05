@@ -109,7 +109,7 @@ def test_synthesis_failure_skips_paragraph(fakes: Fakes, tmp_path: Path) -> None
     env, play_log = engine_log_env(tmp_path)
     env = dict(env, FAKE_SAY_FAIL_TEXT="CRASHER")
     result, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert "1/3" in result.stdout and "3/3" in result.stdout
     assert "could not render" in result.stderr
     assert "continuing with next paragraph" in result.stderr
@@ -127,7 +127,7 @@ def test_synthesis_failure_on_last_paragraph(fakes: Fakes, tmp_path: Path) -> No
         "test",
         env_extra=env,
     )
-    assert result.returncode == 0
+    assert result.returncode == 1
     assert "could not render" in result.stderr
     assert "done (with errors)" in result.stdout
 
@@ -137,7 +137,7 @@ def test_playback_failure_continues_noninteractive(
 ) -> None:
     env, play_log = engine_log_env(tmp_path, fail_at="2")
     result, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert "playback failed" in result.stderr
     assert "continuing with next paragraph" in result.stderr
     assert texts_played(fakes.say_log, play_log) == [PARAGRAPHS[0], PARAGRAPHS[2]]
@@ -147,11 +147,20 @@ def test_playback_failure_afplay_fallback(fakes: Fakes, tmp_path: Path) -> None:
     result, _ = run_doc(
         fakes, tmp_path, DOC, "--player", "afplay", env_extra={"FAKE_PLAY_FAIL_AT": "2"}
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert "playback failed" in result.stderr
     assert "player exited with code 3" in result.stderr
     assert "continuing with next paragraph" in result.stderr
     assert fakes.played_texts() == PARAGRAPHS
+
+
+def test_exit_code_reflects_errors(fakes: Fakes, tmp_path: Path) -> None:
+    clean, _ = run_doc(fakes, tmp_path, DOC, "--player", "test")
+    assert clean.returncode == 0, clean.stderr
+    env, _ = engine_log_env(tmp_path, fail_at="1")
+    failing, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
+    assert failing.returncode == 1, failing.stderr
+    assert "done (with errors)" in failing.stdout
 
 
 def test_corrupt_cache_file_degrades_noninteractive(
@@ -160,7 +169,7 @@ def test_corrupt_cache_file_degrades_noninteractive(
     env, play_log = engine_log_env(tmp_path)
     env = dict(env, FAKE_SAY_CORRUPT_TEXT="CRASHER")
     result, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert "Traceback" not in result.stderr
     assert "playback failed" in result.stderr
     assert "could not load" in result.stderr

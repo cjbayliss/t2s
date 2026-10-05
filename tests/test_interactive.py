@@ -170,7 +170,7 @@ def test_playback_error_waits_for_space(fakes: Fakes, tmp_path: Path) -> None:
             lambda: play_log.exists() and len(play_log.read_text().splitlines()) == 1
         ), "replayed after error"
         os.write(master, b"q")
-        assert proc.wait(timeout=10) == 0
+        assert proc.wait(timeout=10) == 1
     finally:
         cleanup(proc, master, out_r, reader)
 
@@ -196,7 +196,7 @@ def test_corrupt_file_pauses_and_n_skips(fakes: Fakes, tmp_path: Path) -> None:
         os.write(master, b"n")
         assert wait_until(lambda: b"2/2" in buf), bytes(buf)
         assert wait_until(lambda: b"done (with errors)" in buf), bytes(buf)
-        assert proc.wait(timeout=10) == 0
+        assert proc.wait(timeout=10) == 1
         assert texts_played(fakes.say_log, play_log) == ["second paragraph is fine."]
     finally:
         cleanup(proc, master, out_r, reader)
