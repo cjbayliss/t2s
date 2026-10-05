@@ -2,17 +2,22 @@ import functools
 import queue
 import wave
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from t2s.engines import (
+    AudioLibrary,
     StreamEngine,
     engine_close,
     engine_current_index,
     engine_play,
     engine_prime,
     engine_stop_stream,
+    ensure_device,
     load_audio_library,
+    load_miniaudio,
     make_stream_engine,
     pull,
     pull_frames,
@@ -223,6 +228,105 @@ def test_prime_missing_file_is_best_effort(tmp_path: Path) -> None:
     engine = make_raw_engine(chunk_bytes=2)
     engine_prime(engine, 0, tmp_path / "does-not-exist.raw")
     assert engine_current_index(engine) is None
+
+
+def failing_load(engine: StreamEngine, path: Path) -> bytes:
+    raise RuntimeError("decode exploded")
+
+
+def test_play_load_failure_becomes_crash_event(tmp_path: Path) -> None:
+    engine = make_stream_engine(load=failing_load, chunk_bytes=2)
+    engine_play(engine, 3, tmp_path / "x.raw")
+    assert engine_current_index(engine) is None
+    assert events(engine) == [
+        StreamCrashed(3, "could not load x.raw: RuntimeError: decode exploded")
+    ]
+
+
+def test_prime_load_failure_is_silent(tmp_path: Path) -> None:
+    engine = make_stream_engine(load=failing_load, chunk_bytes=2)
+    engine_prime(engine, 0, tmp_path / "x.raw")
+    assert engine_current_index(engine) is None
+    assert events(engine) == []
+
+
+def missing_file_detail(name: str, path: Path) -> str:
+    return (
+        f"could not load {name}: FileNotFoundError: "
+        f"[Errno 2] No such file or directory: '{path}'"
+    )
+
+
+def test_play_missing_file_reports_crash(tmp_path: Path) -> None:
+    engine = make_raw_engine(chunk_bytes=2)
+    missing = tmp_path / "missing.raw"
+    engine_play(engine, 1, missing)
+    detail = missing_file_detail("missing.raw", missing)
+    assert engine_current_index(engine) is None
+    assert events(engine) == [StreamCrashed(1, detail)]
+
+
+def test_failed_play_leaves_current_stream_alone(tmp_path: Path) -> None:
+    data = make_wav(tmp_path, "a.raw", b"\x01\x02" * 2)
+    engine = make_raw_engine(chunk_bytes=2)
+    engine_play(engine, 0, data)
+    drain(engine, 1)
+    missing = tmp_path / "missing.raw"
+    engine_play(engine, 1, missing)
+    detail = missing_file_detail("missing.raw", missing)
+    chunks = drain(engine, 2)
+    assert chunks == [b"\x01\x02", b"\x00\x00"]
+    assert events(engine) == [
+        StreamCrashed(1, detail),
+        StreamFinished(0, False),
+    ]
+
+
+class FakeMiniaudioError(Exception):
+    pass
+
+
+def fake_decode_module() -> Any:
+    class Decoder:
+        MiniaudioError = FakeMiniaudioError
+
+        @staticmethod
+        def wav_read_file_s16(path: str) -> object:
+            raise FakeMiniaudioError("junk data")
+
+    return cast(Any, Decoder)
+
+
+def test_miniaudio_decode_error_is_translated(tmp_path: Path) -> None:
+    audio = AudioLibrary(module=fake_decode_module())
+    with pytest.raises(RuntimeError, match="junk data"):
+        load_miniaudio(audio, tmp_path / "x.wav")
+
+
+def fake_nodevice_module() -> Any:
+    def playback_device(**kwargs: object) -> object:
+        raise FakeMiniaudioError("no output device")
+
+    return cast(
+        Any,
+        SimpleNamespace(
+            MiniaudioError=FakeMiniaudioError,
+            SampleFormat=SimpleNamespace(SIGNED16="s16"),
+            PlaybackDevice=playback_device,
+        ),
+    )
+
+
+def test_device_open_failure_is_translated(tmp_path: Path) -> None:
+    path = tmp_path / "a.wav"
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(22050)
+        wav.writeframes(b"\x00\x00" * 4)
+    engine = make_stream_engine(audio=AudioLibrary(module=fake_nodevice_module()))
+    with pytest.raises(RuntimeError, match="no output device"):
+        ensure_device(engine, path)
 
 
 def test_gap_inserts_silence_between_paragraphs(tmp_path: Path) -> None:

@@ -154,6 +154,20 @@ def test_playback_failure_afplay_fallback(fakes: Fakes, tmp_path: Path) -> None:
     assert fakes.played_texts() == PARAGRAPHS
 
 
+def test_corrupt_cache_file_degrades_noninteractive(
+    fakes: Fakes, tmp_path: Path
+) -> None:
+    env, play_log = engine_log_env(tmp_path)
+    env = dict(env, FAKE_SAY_CORRUPT_TEXT="CRASHER")
+    result, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "playback failed" in result.stderr
+    assert "could not load" in result.stderr
+    assert "continuing with next paragraph" in result.stderr
+    assert texts_played(fakes.say_log, play_log) == [PARAGRAPHS[0], PARAGRAPHS[2]]
+
+
 def test_cache_reused_across_runs(fakes: Fakes, tmp_path: Path) -> None:
     doc = tmp_path / "doc.txt"
     doc.write_text(DOC)
