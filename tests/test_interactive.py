@@ -173,3 +173,30 @@ def test_playback_error_waits_for_space(fakes: Fakes, tmp_path: Path) -> None:
         assert proc.wait(timeout=10) == 0
     finally:
         cleanup(proc, master, out_r, reader)
+
+
+def test_corrupt_file_pauses_and_n_skips(fakes: Fakes, tmp_path: Path) -> None:
+    doc = tmp_path / "doc.txt"
+    doc.write_text("first paragraph with CRASHER inside.\n\nsecond paragraph is fine.")
+
+    env, play_log = engine_log_env(tmp_path, delay="0.3")
+    env = dict(env, FAKE_SAY_CORRUPT_TEXT="CRASHER")
+    proc, master, out_r, err_path = spawn(fakes, tmp_path, doc, env)
+    buf = bytearray()
+    reader = threading.Thread(target=read_loop, args=(out_r, buf), daemon=True)
+    reader.start()
+
+    try:
+        assert wait_until(lambda: b"1/2" in buf), bytes(buf)
+        assert wait_until(lambda: b"device error" in buf), bytes(buf)
+        err = err_path.read_text()
+        assert "playback failed" in err
+        assert "could not load" in err
+        assert texts_played(fakes.say_log, play_log) == []
+        os.write(master, b"n")
+        assert wait_until(lambda: b"2/2" in buf), bytes(buf)
+        assert wait_until(lambda: b"done (with errors)" in buf), bytes(buf)
+        assert proc.wait(timeout=10) == 0
+        assert texts_played(fakes.say_log, play_log) == ["second paragraph is fine."]
+    finally:
+        cleanup(proc, master, out_r, reader)

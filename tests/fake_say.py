@@ -25,6 +25,12 @@ def main() -> int:
         with open(log_path, "a", encoding="utf-8") as log_file:
             log_file.write(f"{logged_path}\t{' '.join(text.split())[:60]}\n")
 
+    corrupt_text = os.environ.get("FAKE_SAY_CORRUPT_TEXT")
+    if corrupt_text and corrupt_text in text:
+        with open(output_path, "wb") as corrupt_file:
+            corrupt_file.write(b"plainly not riff data")
+        return 0
+
     with wave.open(output_path, "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)

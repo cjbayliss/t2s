@@ -107,13 +107,24 @@ def load_audio_library() -> AudioLibrary | None:
 
 
 def load_miniaudio(audio: AudioLibrary, path: Path) -> bytes:
-    decoded = audio.module.wav_read_file_s16(str(path))
+    try:
+        decoded = audio.module.wav_read_file_s16(str(path))
+    except audio.module.MiniaudioError as exc:
+        raise RuntimeError(str(exc)) from exc
     return cast(bytes, decoded.samples.tobytes())
 
 
 def read_wave(path: Path) -> bytes:
     with wave.open(str(path), "rb") as wav:
         return wav.readframes(wav.getnframes())
+
+
+def load_failures() -> tuple[type[BaseException], ...]:
+    return (OSError, EOFError, wave.Error, RuntimeError)
+
+
+def failure_detail(exc: BaseException) -> str:
+    return " ".join(f"{type(exc).__name__}: {exc}".split())[:200]
 
 
 def load_wav(engine: StreamEngine, path: Path) -> bytes:
@@ -195,15 +206,18 @@ def ensure_device(engine: StreamEngine, path: Path) -> None:
         rate, channels = wav.getframerate(), wav.getnchannels()
     set_stream_format(engine, rate, channels)
     module = audio.module
-    device = module.PlaybackDevice(
-        output_format=module.SampleFormat.SIGNED16,
-        nchannels=channels,
-        sample_rate=rate,
-        buffersize_msec=60,
-    )
-    pull = pull_frames(engine)
-    next(pull)
-    device.start(pull)
+    try:
+        device = module.PlaybackDevice(
+            output_format=module.SampleFormat.SIGNED16,
+            nchannels=channels,
+            sample_rate=rate,
+            buffersize_msec=60,
+        )
+        pull = pull_frames(engine)
+        next(pull)
+        device.start(pull)
+    except module.MiniaudioError as exc:
+        raise RuntimeError(str(exc)) from exc
     engine.cell.device = device
 
 
@@ -268,8 +282,14 @@ def start_drain(engine: StreamEngine) -> None:
 
 
 def stream_engine_play(engine: StreamEngine, index: int, path: Path) -> None:
-    ensure_device(engine, path)
-    data = engine.load(engine, path)
+    try:
+        ensure_device(engine, path)
+        data = engine.load(engine, path)
+    except load_failures() as exc:
+        engine.events.put(
+            StreamCrashed(index, f"could not load {path.name}: {failure_detail(exc)}")
+        )
+        return
     with engine.lock:
         engine.cell.stream = stream_play(engine.cell.stream, index, path, data)
     if engine.drain:
@@ -279,7 +299,7 @@ def stream_engine_play(engine: StreamEngine, index: int, path: Path) -> None:
 def stream_engine_prime(engine: StreamEngine, index: int, path: Path) -> None:
     try:
         data = engine.load(engine, path)
-    except OSError, EOFError, wave.Error, RuntimeError:
+    except load_failures():
         return
     with engine.lock:
         engine.cell.stream = stream_prime(engine.cell.stream, index, path, data)
