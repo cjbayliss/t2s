@@ -38,7 +38,9 @@ def test_split_paragraphs_round_trips_joined_normalized_paragraphs(
 @given(st.text(max_size=400))
 def test_split_paragraphs_yields_normalized_nonempty_paragraphs(text: str) -> None:
     paragraphs = split_paragraphs(text)
-    assert all(p and normalize(p) == p for p in paragraphs)
+    assert all(
+        paragraph and normalize(paragraph) == paragraph for paragraph in paragraphs
+    )
     assert bool(paragraphs) == bool(text.strip())
 
 
@@ -61,8 +63,8 @@ def test_evictions_take_the_oldest_prefix_until_under_budget(
     entries: list[tuple[int, int]], limit: int
 ) -> None:
     files = tuple(
-        CacheFile(Path(f"{i}.wav"), size, float(mtime))
-        for i, (size, mtime) in enumerate(entries)
+        CacheFile(Path(f"{index}.wav"), size, float(mtime))
+        for index, (size, mtime) in enumerate(entries)
     )
     evicted = evictions(files, float(limit))
     ordered = sorted(files, key=attrgetter("mtime"))

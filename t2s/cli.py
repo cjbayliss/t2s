@@ -4,9 +4,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__
-from .app import args_from_namespace, config_from_args, open_app, run
-from .pure import split_paragraphs
+from t2s import __version__
+from t2s.app import arguments_from_namespace, config_from_arguments, open_app, run
+from t2s.pure import split_paragraphs
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,12 +58,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--cache-dir",
+        dest="cache_directory",
         default=None,
         metavar="PATH",
         help="audio cache directory (default: ~/Library/Caches/t2s)",
     )
     parser.add_argument(
         "--cache-limit-mb",
+        dest="cache_limit_megabytes",
         type=float,
         default=256.0,
         metavar="MB",
@@ -71,6 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--say-bin",
+        dest="say_binary",
         default=None,
         metavar="PATH",
         help="say binary to run (default: say, or $T2S_SAY_BIN); "
@@ -78,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--play-bin",
+        dest="play_binary",
         default=None,
         metavar="PATH",
         help="audio player binary (default: afplay, or $T2S_PLAY_BIN)",
@@ -111,9 +115,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = args_from_namespace(build_parser().parse_args(argv))
+    arguments = arguments_from_namespace(build_parser().parse_args(argv))
 
-    if args.file == "-":
+    if arguments.file == "-":
         if sys.stdin.isatty():
             print(
                 "t2s: no input - pass a file path or pipe text (see t2s --help)",
@@ -123,25 +127,25 @@ def main(argv: list[str] | None = None) -> int:
         text = sys.stdin.read()
     else:
         try:
-            text = Path(args.file).read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            print(f"t2s: cannot read {args.file}: {exc}", file=sys.stderr)
+            text = Path(arguments.file).read_text(encoding="utf-8", errors="replace")
+        except OSError as exception:
+            print(f"t2s: cannot read {arguments.file}: {exception}", file=sys.stderr)
             return 2
 
-    paragraphs = split_paragraphs(text, args.split_long)
+    paragraphs = split_paragraphs(text, arguments.split_long)
     if not paragraphs:
         print("t2s: input contains no text", file=sys.stderr)
         return 1
-    if not 1 <= args.start <= len(paragraphs):
+    if not 1 <= arguments.start <= len(paragraphs):
         print(
-            f"t2s: --start {args.start} is out of range "
+            f"t2s: --start {arguments.start} is out of range "
             f"(document has {len(paragraphs)} paragraphs)",
             file=sys.stderr,
         )
         return 2
 
     try:
-        return run(open_app(config_from_args(args, paragraphs)))
+        return run(open_app(config_from_arguments(arguments, paragraphs)))
     except BrokenPipeError:
         return 0
     except KeyboardInterrupt:

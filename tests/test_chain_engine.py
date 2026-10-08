@@ -47,10 +47,13 @@ def read_raw(engine: StreamEngine, path: Path) -> bytes:
 
 
 def make_raw_engine(
-    chunk_bytes: int = 1102, gap_ms: int = 0, fail_at: int = 0
+    chunk_bytes: int = 1102, gap_milliseconds: int = 0, fail_at: int = 0
 ) -> StreamEngine:
     return make_stream_engine(
-        load=read_raw, chunk_bytes=chunk_bytes, gap_ms=gap_ms, fail_at=fail_at
+        load=read_raw,
+        chunk_bytes=chunk_bytes,
+        gap_milliseconds=gap_milliseconds,
+        fail_at=fail_at,
     )
 
 
@@ -76,7 +79,7 @@ def test_stream_transitions_are_pure() -> None:
     played = stream_play(initial, 0, Path("a.raw"), b"\x01\x02")
     assert initial == StreamState()
     assert played.current_index == 0
-    assert played.data == b"\x01\x02" and played.data_pos == 0
+    assert played.data == b"\x01\x02" and played.data_position == 0
 
 
 def make_wav(tmp_path: Path, name: str, payload: bytes) -> Path:
@@ -184,7 +187,7 @@ def test_prime_without_chain_is_ignored(tmp_path: Path) -> None:
 def test_set_stream_format_updates_gap(tmp_path: Path) -> None:
     first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 2)
     second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
-    engine = make_raw_engine(chunk_bytes=2, gap_ms=2)
+    engine = make_raw_engine(chunk_bytes=2, gap_milliseconds=2)
     set_stream_format(engine, 48000, 1)
     gap = round(2 * 48000 / 1000) * 2
     assert gap == 192
@@ -332,15 +335,15 @@ def test_device_open_failure_is_translated(tmp_path: Path) -> None:
 
 
 def test_gap_warning_fires_only_for_afplay(capsys: pytest.CaptureFixture[str]) -> None:
-    make_engine("afplay", ("afplay",), gap_ms=150)
+    make_engine("afplay", ("afplay",), gap_milliseconds=150)
     assert "--gap" in capsys.readouterr().err
-    make_engine("afplay", ("afplay",), gap_ms=0)
+    make_engine("afplay", ("afplay",), gap_milliseconds=0)
     assert capsys.readouterr().err == ""
-    make_engine("test", (), gap_ms=150)
+    make_engine("test", (), gap_milliseconds=150)
     assert capsys.readouterr().err == ""
-    make_engine("auto", ("afplay",), gap_ms=150, audio=load_audio_library())
+    make_engine("auto", ("afplay",), gap_milliseconds=150, audio=load_audio_library())
     assert capsys.readouterr().err == ""
-    make_engine("auto", ("afplay",), gap_ms=150, audio=None)
+    make_engine("auto", ("afplay",), gap_milliseconds=150, audio=None)
     assert "--gap" in capsys.readouterr().err
 
 
@@ -413,10 +416,10 @@ def test_production_engine_primes_async() -> None:
     assert engine.prime_async
 
 
-def test_gap_inserts_silence_between_paragraphs(tmp_path: Path) -> None:
+def test_gap_inserts_silence_betweeparagraph_count(tmp_path: Path) -> None:
     first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 3)
     second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
-    engine = make_raw_engine(chunk_bytes=2, gap_ms=2)
+    engine = make_raw_engine(chunk_bytes=2, gap_milliseconds=2)
     expected_gap = round(2 * 22050 / 1000) * 2
     assert expected_gap == 88
     engine_play(engine, 0, first)
@@ -448,7 +451,7 @@ def test_zero_gap_is_the_default(tmp_path: Path) -> None:
 
 def test_explicit_play_has_no_leading_gap(tmp_path: Path) -> None:
     data = make_wav(tmp_path, "a.raw", b"\x01\x02" * 4)
-    engine = make_raw_engine(chunk_bytes=2, gap_ms=500)
+    engine = make_raw_engine(chunk_bytes=2, gap_milliseconds=500)
     engine_play(engine, 0, data)
     chunks = drain(engine, 2)
     assert chunks == [b"\x01\x02", b"\x01\x02"]
@@ -457,7 +460,7 @@ def test_explicit_play_has_no_leading_gap(tmp_path: Path) -> None:
 def test_gap_across_request_boundaries(tmp_path: Path) -> None:
     first = make_wav(tmp_path, "a.raw", b"\x01\x02" * 2)
     second = make_wav(tmp_path, "b.raw", b"\x03\x04" * 2)
-    engine = make_raw_engine(chunk_bytes=2, gap_ms=10)
+    engine = make_raw_engine(chunk_bytes=2, gap_milliseconds=10)
     expected_gap = round(10 * 22050 / 1000) * 2
     engine_play(engine, 0, first)
     engine_prime(engine, 1, second)

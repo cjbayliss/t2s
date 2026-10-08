@@ -13,12 +13,14 @@ from t2s.pure import (
 SENTENCES = st.lists(st.text(alphabet="ab ck.,", min_size=1, max_size=12), max_size=20)
 
 
-def reference_pack(sentences: tuple[str, ...], max_chars: int) -> tuple[str, ...]:
+def reference_pack(
+    sentences: tuple[str, ...], maximum_characters: int
+) -> tuple[str, ...]:
     def pack(packed: tuple[str, ...], sentence: str) -> tuple[str, ...]:
         if not packed:
             return (sentence,)
         current = packed[-1]
-        if len(current) + 1 + len(sentence) > max_chars:
+        if len(current) + 1 + len(sentence) > maximum_characters:
             return (*packed, sentence)
         return (*packed[:-1], f"{current} {sentence}")
 
@@ -27,21 +29,25 @@ def reference_pack(sentences: tuple[str, ...], max_chars: int) -> tuple[str, ...
 
 @settings(max_examples=50)
 @given(SENTENCES, st.integers(0, 40))
-def test_pack_sentences_matches_reference(sentences: list[str], max_chars: int) -> None:
+def test_pack_sentences_matches_reference(
+    sentences: list[str], maximum_characters: int
+) -> None:
     packed = tuple(sentences)
-    assert pack_sentences(packed, max_chars) == reference_pack(packed, max_chars)
+    assert pack_sentences(packed, maximum_characters) == reference_pack(
+        packed, maximum_characters
+    )
 
 
 @settings(max_examples=50)
 @given(SENTENCES, st.integers(1, 40))
 def test_pack_sentences_preserves_join_and_limit(
-    sentences: list[str], max_chars: int
+    sentences: list[str], maximum_characters: int
 ) -> None:
-    packed = pack_sentences(tuple(sentences), max_chars)
+    packed = pack_sentences(tuple(sentences), maximum_characters)
     assert " ".join(packed) == " ".join(sentences)
     inputs = set(sentences)
     for group in packed:
-        assert len(group) <= max_chars or group in inputs
+        assert len(group) <= maximum_characters or group in inputs
 
 
 def test_split_long_with_nonpositive_limit_keeps_text_whole() -> None:
@@ -87,21 +93,21 @@ def test_split_long_breaks_at_sentences() -> None:
         "Seven eight nine ten eleven twelve. "
         "Thirteen fourteen fifteen. "
     )
-    paragraphs = split_paragraphs(para, max_chars=40)
+    paragraphs = split_paragraphs(para, maximum_characters=40)
     assert len(paragraphs) == 3
     assert all(len(paragraph) <= 40 for paragraph in paragraphs)
     assert " ".join(paragraphs) == para.strip()
-    assert split_paragraphs(para, max_chars=40) == paragraphs
+    assert split_paragraphs(para, maximum_characters=40) == paragraphs
 
 
 def test_split_long_keeps_short_paragraph_whole() -> None:
     para = "Short. Also short."
-    assert split_paragraphs(para, max_chars=100) == (para,)
+    assert split_paragraphs(para, maximum_characters=100) == (para,)
 
 
 def test_split_long_overlong_sentence_stays_whole() -> None:
     para = "Word " * 100 + "end."
-    paragraphs = split_paragraphs(para, max_chars=50)
+    paragraphs = split_paragraphs(para, maximum_characters=50)
     assert paragraphs == (para.strip(),)
 
 
@@ -114,7 +120,7 @@ def test_numbering_matches_paragraph_list() -> None:
 
 def test_pack_sentences_greedy_and_pure() -> None:
     sentences = ("One two.", "Three four.", "Five.")
-    packed = pack_sentences(sentences, max_chars=24)
+    packed = pack_sentences(sentences, maximum_characters=24)
     assert packed == ("One two. Three four.", "Five.")
     assert " ".join(packed) == " ".join(sentences)
 

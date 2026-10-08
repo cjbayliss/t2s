@@ -17,7 +17,7 @@ t2s = "t2s.cli:main"
 test = ["hypothesis>=6", "pytest>=8"]
 
 [dependency-groups]
-dev = ["mypy>=1.15", "pytest-cov>=6", "ruff>=0.9"]
+dev = ["hypothesis>=6", "mypy>=1.15", "pytest>=8", "pytest-cov>=6", "ruff>=0.9"]
 
 [tool.setuptools]
 packages = ["t2s"]

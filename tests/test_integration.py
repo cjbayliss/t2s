@@ -2,7 +2,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from conftest import Fakes, engine_log_env, run_t2s, texts_played
+from conftest import Fakes, engine_log_environment, run_t2s, texts_played
 
 DOC = (
     "First paragraph has a few words.\n"
@@ -24,22 +24,24 @@ def run_doc(
     tmp_path: Path,
     text: str,
     *extra: str,
-    env_extra: dict[str, str] | None = None,
+    environment_extra: dict[str, str] | None = None,
     player: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     doc = tmp_path / "doc.txt"
     doc.write_text(text)
     cache = tmp_path / "cache"
-    args = [str(doc), "--cache-dir", str(cache), *extra]
+    arguments = [str(doc), "--cache-dir", str(cache), *extra]
     if player:
-        args += ["--player", player]
-    result = run_t2s(args, fakes, env_extra=env_extra)
+        arguments += ["--player", player]
+    result = run_t2s(arguments, fakes, environment_extra=environment_extra)
     return result, cache
 
 
 def test_reads_all_paragraphs_in_order(fakes: Fakes, tmp_path: Path) -> None:
-    env, play_log = engine_log_env(tmp_path)
-    result, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
+    environment, play_log = engine_log_environment(tmp_path)
+    result, _ = run_doc(
+        fakes, tmp_path, DOC, "--player", "test", environment_extra=environment
+    )
     assert result.returncode == 0, result.stderr
     for marker in ("1/3", "2/3", "3/3"):
         assert marker in result.stdout
@@ -56,12 +58,12 @@ def test_afplay_fallback_smoke(fakes: Fakes, tmp_path: Path) -> None:
 
 
 def test_stdin_pipeline(fakes: Fakes, tmp_path: Path) -> None:
-    env, play_log = engine_log_env(tmp_path)
+    environment, play_log = engine_log_environment(tmp_path)
     cache = tmp_path / "cache"
     result = run_t2s(
         ["--cache-dir", str(cache), "--player", "test"],
         fakes,
-        env_extra=env,
+        environment_extra=environment,
         input=b"Piped in.\n\nSecond piped.\n",
     )
     assert result.returncode == 0, result.stderr
@@ -70,9 +72,16 @@ def test_stdin_pipeline(fakes: Fakes, tmp_path: Path) -> None:
 
 
 def test_start_flag_skips_earlier_paragraphs(fakes: Fakes, tmp_path: Path) -> None:
-    env, play_log = engine_log_env(tmp_path)
+    environment, play_log = engine_log_environment(tmp_path)
     result, _ = run_doc(
-        fakes, tmp_path, DOC, "--start", "2", "--player", "test", env_extra=env
+        fakes,
+        tmp_path,
+        DOC,
+        "--start",
+        "2",
+        "--player",
+        "test",
+        environment_extra=environment,
     )
     assert result.returncode == 0, result.stderr
     assert "2/3" in result.stdout
@@ -106,9 +115,11 @@ def test_empty_stdin_errors(fakes: Fakes, tmp_path: Path) -> None:
 
 
 def test_synthesis_failure_skips_paragraph(fakes: Fakes, tmp_path: Path) -> None:
-    env, play_log = engine_log_env(tmp_path)
-    env = dict(env, FAKE_SAY_FAIL_TEXT="CRASHER")
-    result, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
+    environment, play_log = engine_log_environment(tmp_path)
+    environment = dict(environment, FAKE_SAY_FAIL_TEXT="CRASHER")
+    result, _ = run_doc(
+        fakes, tmp_path, DOC, "--player", "test", environment_extra=environment
+    )
     assert result.returncode == 1, result.stderr
     assert "1/3" in result.stdout and "3/3" in result.stdout
     assert "could not render" in result.stderr
@@ -117,15 +128,15 @@ def test_synthesis_failure_skips_paragraph(fakes: Fakes, tmp_path: Path) -> None
 
 
 def test_synthesis_failure_on_last_paragraph(fakes: Fakes, tmp_path: Path) -> None:
-    env, _ = engine_log_env(tmp_path)
-    env = dict(env, FAKE_SAY_FAIL_TEXT="CRASHER")
+    environment, _ = engine_log_environment(tmp_path)
+    environment = dict(environment, FAKE_SAY_FAIL_TEXT="CRASHER")
     result, _ = run_doc(
         fakes,
         tmp_path,
         "Only paragraph with CRASHER here.",
         "--player",
         "test",
-        env_extra=env,
+        environment_extra=environment,
     )
     assert result.returncode == 1
     assert "could not render" in result.stderr
@@ -135,8 +146,10 @@ def test_synthesis_failure_on_last_paragraph(fakes: Fakes, tmp_path: Path) -> No
 def test_playback_failure_continues_noninteractive(
     fakes: Fakes, tmp_path: Path
 ) -> None:
-    env, play_log = engine_log_env(tmp_path, fail_at="2")
-    result, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
+    environment, play_log = engine_log_environment(tmp_path, fail_at="2")
+    result, _ = run_doc(
+        fakes, tmp_path, DOC, "--player", "test", environment_extra=environment
+    )
     assert result.returncode == 1, result.stderr
     assert "playback failed" in result.stderr
     assert "continuing with next paragraph" in result.stderr
@@ -145,7 +158,12 @@ def test_playback_failure_continues_noninteractive(
 
 def test_playback_failure_afplay_fallback(fakes: Fakes, tmp_path: Path) -> None:
     result, _ = run_doc(
-        fakes, tmp_path, DOC, "--player", "afplay", env_extra={"FAKE_PLAY_FAIL_AT": "2"}
+        fakes,
+        tmp_path,
+        DOC,
+        "--player",
+        "afplay",
+        environment_extra={"FAKE_PLAY_FAIL_AT": "2"},
     )
     assert result.returncode == 1, result.stderr
     assert "playback failed" in result.stderr
@@ -157,8 +175,10 @@ def test_playback_failure_afplay_fallback(fakes: Fakes, tmp_path: Path) -> None:
 def test_exit_code_reflects_errors(fakes: Fakes, tmp_path: Path) -> None:
     clean, _ = run_doc(fakes, tmp_path, DOC, "--player", "test")
     assert clean.returncode == 0, clean.stderr
-    env, _ = engine_log_env(tmp_path, fail_at="1")
-    failing, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
+    environment, _ = engine_log_environment(tmp_path, fail_at="1")
+    failing, _ = run_doc(
+        fakes, tmp_path, DOC, "--player", "test", environment_extra=environment
+    )
     assert failing.returncode == 1, failing.stderr
     assert "done (with errors)" in failing.stdout
 
@@ -166,9 +186,11 @@ def test_exit_code_reflects_errors(fakes: Fakes, tmp_path: Path) -> None:
 def test_corrupt_cache_file_degrades_noninteractive(
     fakes: Fakes, tmp_path: Path
 ) -> None:
-    env, play_log = engine_log_env(tmp_path)
-    env = dict(env, FAKE_SAY_CORRUPT_TEXT="CRASHER")
-    result, _ = run_doc(fakes, tmp_path, DOC, "--player", "test", env_extra=env)
+    environment, play_log = engine_log_environment(tmp_path)
+    environment = dict(environment, FAKE_SAY_CORRUPT_TEXT="CRASHER")
+    result, _ = run_doc(
+        fakes, tmp_path, DOC, "--player", "test", environment_extra=environment
+    )
     assert result.returncode == 1, result.stderr
     assert "Traceback" not in result.stderr
     assert "playback failed" in result.stderr
@@ -181,10 +203,10 @@ def test_cache_reused_across_runs(fakes: Fakes, tmp_path: Path) -> None:
     doc = tmp_path / "doc.txt"
     doc.write_text(DOC)
     cache = tmp_path / "cache"
-    env, play_log = engine_log_env(tmp_path)
-    args = [str(doc), "--cache-dir", str(cache), "--player", "test"]
+    environment, play_log = engine_log_environment(tmp_path)
+    arguments = [str(doc), "--cache-dir", str(cache), "--player", "test"]
 
-    run_t2s(args, fakes, env_extra=env)
+    run_t2s(arguments, fakes, environment_extra=environment)
     deadline = time.monotonic() + 5
     while (
         len(list(cache.glob("*.wav"))) < len(PARAGRAPHS) and time.monotonic() < deadline
@@ -192,7 +214,7 @@ def test_cache_reused_across_runs(fakes: Fakes, tmp_path: Path) -> None:
         time.sleep(0.02)
     renders_after_first = fakes.say_log.read_text().splitlines()
 
-    result = run_t2s(args, fakes, env_extra=env)
+    result = run_t2s(arguments, fakes, environment_extra=environment)
     assert result.returncode == 0, result.stderr
     renders_after_second = fakes.say_log.read_text().splitlines()
 
@@ -201,9 +223,16 @@ def test_cache_reused_across_runs(fakes: Fakes, tmp_path: Path) -> None:
 
 
 def test_gap_option_preserves_order(fakes: Fakes, tmp_path: Path) -> None:
-    env, play_log = engine_log_env(tmp_path)
+    environment, play_log = engine_log_environment(tmp_path)
     result, _ = run_doc(
-        fakes, tmp_path, DOC, "--gap", "150", "--player", "test", env_extra=env
+        fakes,
+        tmp_path,
+        DOC,
+        "--gap",
+        "150",
+        "--player",
+        "test",
+        environment_extra=environment,
     )
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
@@ -261,7 +290,7 @@ def test_split_long_flag(fakes: Fakes, tmp_path: Path) -> None:
         "Nine ten eleven twelve thirteen fourteen fifteen. "
         "Sixteen seventeen eighteen nineteen twenty."
     )
-    env, play_log = engine_log_env(tmp_path)
+    environment, play_log = engine_log_environment(tmp_path)
     result, _ = run_doc(
         fakes,
         tmp_path,
@@ -270,7 +299,7 @@ def test_split_long_flag(fakes: Fakes, tmp_path: Path) -> None:
         "60",
         "--player",
         "test",
-        env_extra=env,
+        environment_extra=environment,
     )
     assert result.returncode == 0, result.stderr
     assert "1/4" in result.stdout

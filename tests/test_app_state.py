@@ -21,7 +21,7 @@ from t2s.pure import (
 
 def state(
     index: int = 0,
-    n_paragraphs: int = 3,
+    paragraph_count: int = 3,
     mode: PlayMode = "stopped",
     running: bool = True,
     had_errors: bool = False,
@@ -29,7 +29,7 @@ def state(
 ) -> AppState:
     return AppState(
         index=index,
-        n_paragraphs=n_paragraphs,
+        paragraph_count=paragraph_count,
         mode=mode,
         running=running,
         had_errors=had_errors,
@@ -39,9 +39,11 @@ def state(
 
 def test_q_quits_with_position_note() -> None:
     next_state, effects = handle_key(
-        state(index=1, n_paragraphs=5, mode="playing"), "q"
+        state(index=1, paragraph_count=5, mode="playing"), "q"
     )
-    assert next_state == state(index=1, n_paragraphs=5, mode="playing", running=False)
+    assert next_state == state(
+        index=1, paragraph_count=5, mode="playing", running=False
+    )
     assert effects == (Note("stopped at 2/5"),)
 
 
@@ -66,8 +68,10 @@ def test_space_while_playing_but_idle_is_a_no_op() -> None:
 
 
 def test_space_while_paused_replays_from_the_top() -> None:
-    next_state, effects = handle_key(state(index=2, n_paragraphs=5, mode="paused"), " ")
-    assert next_state == state(index=2, n_paragraphs=5, mode="paused")
+    next_state, effects = handle_key(
+        state(index=2, paragraph_count=5, mode="paused"), " "
+    )
+    assert next_state == state(index=2, paragraph_count=5, mode="paused")
     assert effects == (ClearFailure(2), TryPlay(2, "resumed"))
 
 
@@ -84,18 +88,18 @@ def test_n_advances_via_tryplay() -> None:
 
 
 def test_p_rewinds() -> None:
-    _, effects = handle_key(state(index=2, n_paragraphs=3, mode="playing"), "p")
+    _, effects = handle_key(state(index=2, paragraph_count=3, mode="playing"), "p")
     assert effects == (TryPlay(1),)
 
 
 def test_n_at_last_paragraph_reports_the_edge() -> None:
-    next_state, effects = handle_key(state(index=2, n_paragraphs=3), "n")
-    assert next_state == state(index=2, n_paragraphs=3)
+    next_state, effects = handle_key(state(index=2, paragraph_count=3), "n")
+    assert next_state == state(index=2, paragraph_count=3)
     assert effects == (Note("already at last paragraph"),)
 
 
 def test_p_at_first_paragraph_reports_the_edge() -> None:
-    _, effects = handle_key(state(index=0, n_paragraphs=3), "p")
+    _, effects = handle_key(state(index=0, paragraph_count=3), "p")
     assert effects == (Note("already at first paragraph"),)
 
 
@@ -144,7 +148,7 @@ def test_finished_last_paragraph_finishes_the_document() -> None:
 
 def test_finished_after_errors_reports_them() -> None:
     _, effects = handle_engine_event(
-        state(n_paragraphs=1, mode="playing", had_errors=True),
+        state(paragraph_count=1, mode="playing", had_errors=True),
         StreamFinished(0, False),
     )
     assert effects == (Note("done (with errors)"),)
@@ -213,13 +217,13 @@ def test_apply_play_outcome_failed_skips_to_next() -> None:
 
 
 def test_apply_play_outcome_failed_on_last_finishes_with_errors() -> None:
-    next_state, effects = apply_play_outcome(state(n_paragraphs=1), 0, "failed")
-    assert next_state == state(n_paragraphs=1, running=False, had_errors=True)
+    next_state, effects = apply_play_outcome(state(paragraph_count=1), 0, "failed")
+    assert next_state == state(paragraph_count=1, running=False, had_errors=True)
     assert effects == (Note("done (with errors)"),)
 
 
 def test_skip_chain_is_loop_free() -> None:
-    next_state, effects = apply_play_outcome(state(n_paragraphs=4), 0, "failed")
+    next_state, effects = apply_play_outcome(state(paragraph_count=4), 0, "failed")
     tried: list[int] = []
     while effects and isinstance(effects[0], TryPlay):
         tried.append(effects[0].index)

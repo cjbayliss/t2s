@@ -11,10 +11,10 @@ def main() -> int:
         return 1
 
     output_path = None
-    args = sys.argv[1:]
-    for i, arg in enumerate(args):
-        if arg == "-o" and i + 1 < len(args):
-            output_path = args[i + 1]
+    arguments = sys.argv[1:]
+    for position, argument in enumerate(arguments):
+        if argument == "-o" and position + 1 < len(arguments):
+            output_path = arguments[position + 1]
     if output_path is None:
         sys.stderr.write("fake say: no -o argument\n")
         return 2

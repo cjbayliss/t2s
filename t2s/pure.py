@@ -18,8 +18,8 @@ def frames_to_bytes(frames: int, channels: int) -> int:
     return frames * channels * 2
 
 
-def gap_bytes(gap_ms: int, rate: int, channels: int) -> int:
-    return frames_to_bytes(int(round(gap_ms * rate / 1000)), channels)
+def gap_bytes(gap_milliseconds: int, rate: int, channels: int) -> int:
+    return frames_to_bytes(int(round(gap_milliseconds * rate / 1000)), channels)
 
 
 def normalize(text: str) -> str:
@@ -34,14 +34,16 @@ def split_sentences(text: str) -> tuple[str, ...]:
     )
 
 
-def pack_sentences(sentences: Sequence[str], max_chars: int) -> tuple[str, ...]:
+def pack_sentences(
+    sentences: Sequence[str], maximum_characters: int
+) -> tuple[str, ...]:
 
     def groups() -> Iterator[str]:
         current = ""
         for sentence in sentences:
             if not current:
                 current = sentence
-            elif len(current) + 1 + len(sentence) > max_chars:
+            elif len(current) + 1 + len(sentence) > maximum_characters:
                 yield current
                 current = sentence
             else:
@@ -52,17 +54,21 @@ def pack_sentences(sentences: Sequence[str], max_chars: int) -> tuple[str, ...]:
     return tuple(groups())
 
 
-def split_long_paragraph(text: str, max_chars: int) -> tuple[str, ...]:
-    if max_chars <= 0:
+def split_long_paragraph(text: str, maximum_characters: int) -> tuple[str, ...]:
+    if maximum_characters <= 0:
         return (text,)
-    return pack_sentences(split_sentences(text), max_chars) or (text,)
+    return pack_sentences(split_sentences(text), maximum_characters) or (text,)
 
 
-def split_paragraphs(text: str, max_chars: int | None = None) -> tuple[str, ...]:
+def split_paragraphs(
+    text: str, maximum_characters: int | None = None
+) -> tuple[str, ...]:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     normalized = (normalize(paragraph) for paragraph in re.split(r"\n[ \t]*\n+", text))
     expanded = (
-        split_long_paragraph(paragraph, max_chars) if max_chars else (paragraph,)
+        split_long_paragraph(paragraph, maximum_characters)
+        if maximum_characters
+        else (paragraph,)
         for paragraph in normalized
         if paragraph
     )
@@ -160,7 +166,7 @@ class StreamState:
     paths: Mapping[int, Path] = field(default_factory=dict[int, Path])
     current_index: int | None = None
     data: bytes = b""
-    data_pos: int = 0
+    data_position: int = 0
     chained_index: int | None = None
     gap_bytes_left: int = 0
     start_count: int = 0
@@ -176,8 +182,10 @@ def stream_gc(state: StreamState) -> StreamState:
     )
     return replace(
         state,
-        sources={i: b for i, b in state.sources.items() if i >= floor},
-        paths={i: p for i, p in state.paths.items() if i >= floor},
+        sources={
+            index: data for index, data in state.sources.items() if index >= floor
+        },
+        paths={index: path for index, path in state.paths.items() if index >= floor},
     )
 
 
@@ -189,7 +197,7 @@ def stream_play(state: StreamState, index: int, path: Path, data: bytes) -> Stre
             paths={**state.paths, index: path},
             current_index=index,
             data=data,
-            data_pos=0,
+            data_position=0,
             chained_index=None,
         )
     )
@@ -217,7 +225,7 @@ def stream_stop(state: StreamState) -> StreamState:
             state,
             current_index=None,
             data=b"",
-            data_pos=0,
+            data_position=0,
             chained_index=None,
             gap_bytes_left=0,
         )
@@ -268,7 +276,7 @@ def stream_next_chunk(
         if state.current_index is None:
             break
         index = state.current_index
-        if state.data_pos >= len(state.data):
+        if state.data_position >= len(state.data):
             next_index = state.chained_index
             chained = next_index is not None and next_index in state.sources
             events += (StreamFinished(index, chained),)
@@ -280,14 +288,14 @@ def stream_next_chunk(
                     state,
                     current_index=next_index,
                     data=state.sources[next_index],
-                    data_pos=0,
+                    data_position=0,
                     chained_index=None,
                     gap_bytes_left=gap_size_bytes,
                 )
             )
             events += (StreamChained(next_index),)
             continue
-        if state.data_pos == 0:
+        if state.data_position == 0:
             start_count = state.start_count + 1
             state = replace(state, start_count=start_count)
             if fail_at and start_count == fail_at:
@@ -296,14 +304,14 @@ def stream_next_chunk(
                     state,
                     current_index=None,
                     data=b"",
-                    data_pos=0,
+                    data_position=0,
                     chained_index=None,
                 )
                 break
             events += (StreamStarted(index),)
-        take = min(remaining, len(state.data) - state.data_pos)
-        parts += (state.data[state.data_pos : state.data_pos + take],)
-        state = replace(state, data_pos=state.data_pos + take)
+        take = min(remaining, len(state.data) - state.data_position)
+        parts += (state.data[state.data_position : state.data_position + take],)
+        state = replace(state, data_position=state.data_position + take)
         remaining -= take
     if not parts:
         return None, state, events
@@ -317,7 +325,7 @@ type PlayOutcome = Literal["playing", "paused", "failed"]
 @dataclass(frozen=True)
 class AppState:
     index: int
-    n_paragraphs: int
+    paragraph_count: int
     mode: PlayMode = "stopped"
     running: bool = True
     had_errors: bool = False
@@ -364,7 +372,7 @@ def handle_key(
 ) -> tuple[AppState, Effects]:
     if key in ("q", "Q", "\x03"):
         return replace(state, running=False), (
-            Note(f"stopped at {state.index + 1}/{state.n_paragraphs}"),
+            Note(f"stopped at {state.index + 1}/{state.paragraph_count}"),
         )
     if key == " ":
         if state.mode == "playing":
@@ -383,7 +391,7 @@ def handle_key(
     if key in ("n", "N", "p", "P"):
         delta = 1 if key in ("n", "N") else -1
         target = state.index + delta
-        if not 0 <= target < state.n_paragraphs:
+        if not 0 <= target < state.paragraph_count:
             edge = "last" if delta > 0 else "first"
             return state, (Note(f"already at {edge} paragraph"),)
         return state, (TryPlay(target),)
@@ -397,17 +405,17 @@ def handle_engine_event(
         case StreamCrashed(index, detail):
             if state.mode != "playing":
                 return state, ()
-            msg = f"! playback failed: {detail}"
+            message = f"! playback failed: {detail}"
             if state.interactive:
                 return replace(state, mode="paused", had_errors=True), (
-                    Warn(msg),
+                    Warn(message),
                     Note("device error - space: replay, n/p: skip, q: quit"),
                 )
             next_state, effects = advance(
                 replace(state, mode="stopped", had_errors=True), after_error=True
             )
             return next_state, (
-                Warn(msg + " - continuing with next paragraph"),
+                Warn(message + " - continuing with next paragraph"),
                 *effects,
             )
         case StreamFinished(index, chained):
@@ -416,10 +424,10 @@ def handle_engine_event(
             next_state = replace(state, index=index)
             if chained:
                 return next_state, ()
-            if index + 1 < state.n_paragraphs:
+            if index + 1 < state.paragraph_count:
                 return next_state, (TryPlay(index + 1),)
             return replace(next_state, running=False), (
-                Note(done_message(state.n_paragraphs, next_state.had_errors)),
+                Note(done_message(state.paragraph_count, next_state.had_errors)),
             )
         case StreamChained(index):
             if state.mode == "playing":
@@ -441,15 +449,15 @@ def apply_play_outcome(
 
 def advance(state: AppState, *, after_error: bool = False) -> tuple[AppState, Effects]:
     next_index = state.index + 1
-    if next_index < state.n_paragraphs:
+    if next_index < state.paragraph_count:
         return state, (TryPlay(next_index),)
     return replace(state, running=False), (
-        Note(done_message(state.n_paragraphs, after_error or state.had_errors)),
+        Note(done_message(state.paragraph_count, after_error or state.had_errors)),
     )
 
 
-def build_say_cmd(
-    say_bin: str, voice: str | None, rate: int | None, data_format: str
+def build_say_command(
+    say_binary: str, voice: str | None, rate: int | None, data_format: str
 ) -> tuple[str, ...]:
     options = (
         ("-v", voice) if voice else (),
@@ -457,7 +465,7 @@ def build_say_cmd(
         ("--file-format", "WAVE"),
         ("--data-format", data_format),
     )
-    return (say_bin, *chain.from_iterable(options))
+    return (say_binary, *chain.from_iterable(options))
 
 
 def done_message(count: int, had_errors: bool) -> str:
@@ -491,13 +499,13 @@ def gap_supported(choice: EngineChoice) -> bool:
     return choice in ("miniaudio", "test")
 
 
-def resolve_say_bin(explicit: str | None, env: Mapping[str, str]) -> str:
-    return explicit or env.get("T2S_SAY_BIN") or "say"
+def resolve_say_binary(explicit: str | None, environment: Mapping[str, str]) -> str:
+    return explicit or environment.get("T2S_SAY_BIN") or "say"
 
 
-def resolve_play_bin(explicit: str | None, env: Mapping[str, str]) -> str:
-    return explicit or env.get("T2S_PLAY_BIN") or "afplay"
+def resolve_play_binary(explicit: str | None, environment: Mapping[str, str]) -> str:
+    return explicit or environment.get("T2S_PLAY_BIN") or "afplay"
 
 
-def resolve_cache_dir(explicit: str | None, home: Path) -> Path:
+def resolve_cache_directory(explicit: str | None, home: Path) -> Path:
     return Path(explicit) if explicit else home / "Library" / "Caches" / "t2s"
