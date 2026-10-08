@@ -1,99 +1,67 @@
-# AGENTS.md
+# Python Coding Agent Instructions
 
-Guidance for humans and LLM agents editing t2s. The project follows a
-**strict functional programming style**; the rules below are the review
-bar for every change, and `ruff`, `mypy --strict`, and `pytest` are the
-gate every change must pass.
+## Style of programming
 
-## The rules
+- Write in **strictly functional style**:
+  - All functions must be pure: same inputs, same output, no side
+    effects.
+  - Side effects (I/O, logging, random, time) are allowed only at the
+    outermost boundary (`main` or a thin adapter layer); everything else
+    takes inputs and returns values.
+  - Never mutate data. Treat all inputs as immutable. Return new values
+    instead of modifying existing ones.
+  - Prefer expressions over statements: comprehensions, ternaries, and
+    `match` instead of accumulator loops and reassignment.
+  - No classes with mutable state or methods that mutate `self`. Use
+    `@dataclass(frozen=True)` (or `NamedTuple`) for structured data.
+    Plain functions are the default; classes only when a protocol or
+    framework demands them.
+  - No global or module-level mutable state, no singletons.
+  - Prefer `functools.reduce`, `itertools`, `map`/`filter`, or
+    comprehensions over imperative loops when it stays readable.
+  - Prefer raising no exceptions for expected control flow: return
+    `None`, a sentinel, or an explicit result type (`Success | Failure`
+    via union types) instead.
 
-1. **Pure functions by default.** Same arguments in, same value out. A
-   function must not perform I/O, read global state, mutate anything,
-   or depend on anything that does. Values in, values out.
+## Naming
 
-2. **Data is immutable.** Dataclasses are `@dataclass(frozen=True)`;
-   derive new values with `dataclasses.replace` instead of assigning to
-   attributes. Prefer tuples and frozensets over lists and sets. Never
-   call container mutators (`.append`, `.update`, `.sort`, ...) or
-   assign to subscripts - build the new collection instead.
+- Every name must be fully descriptive and self-explanatory. **Never
+  abbreviate or shorten names** — spell words out completely
+  (`maximum_allowed_connections`, not `max_conn`).
+- Names must make the code readable without comments: functions read as
+  verbs describing behavior, variables as clear nouns of what they hold.
+- Follow PEP 8 casing: `snake_case` for functions/variables/modules,
+  `PascalCase` for types.
 
-3. **No `global`/`nonlocal`.** Module-level names are constants. State
-   is threaded through parameters and return values.
+## Documentation
 
-4. **Errors are values.** Pure code reports failure in its return value
-   (`None`, a tagged union, a `Result`-shaped value) instead of raising.
-   `raise`/`except` live only at effect edges, where an exception from
-   the outside world is converted into a value.
+- **Never write docstrings or comments.** Code and names must be fully
+  self-documenting. If something feels like it needs a comment, rename
+  or restructure it instead.
 
-5. **Effects live at the edges.** Subprocesses (`say`, `afplay`), audio
-   devices, the filesystem, the terminal, clocks, threads, and queues
-   are side effects. Confine them to the program boundary (`main`) and
-   the sanctioned effect machinery (the synth worker and playback
-   engines). Everything else takes the world as parameters - paths,
-   streams, environment, time, the subprocess runner - so pure logic
-   stays testable without patching.
+## PEP compliance
 
-6. **No hidden nondeterminism.** Anything that can vary between runs
-   (time, randomness, environment, device state) enters as an explicit
-   parameter, never as a direct call buried in pure code.
+- Strictly follow **PEP 8** (style, imports ordering) and the **PEP 20**
+  (Zen of Python). The exception is line length, that will be enforced
+  by `ruff`.
+- Fully type-annotate everything per **PEP 484/526**: use modern syntax
+  (`list[int]`, `int | None`, **PEP 604/585**), `TypeAlias` where
+  helpful. Code must pass `mypy --strict`.
+- Use **PEP 557** dataclasses, **PEP 634** structural pattern matching,
+  and **PEP 618** zip strictness where they improve clarity.
+- Imports: absolute, sorted per PEP 8; no wildcard imports.
+- Exceptions: raise specific built-in exception types, never bare
+  `except:`.
 
-7. **No comments, no docstrings.** Names, types, and tests carry the
-   meaning; design rationale lives in this file and the README.
-   `tests/test_source_bans.py` (AST + tokenize) fails on any `#`
-   comment or docstring anywhere in `t2s/` or `tests/`, so violations
-   cannot merge. There is consequently no such thing as a `noqa`: fix
-   the code instead of suppressing the rule.
+## Output
 
-## Layout
+- Return complete, runnable code — no placeholders, no `...`, no TODOs.
 
-The package is split by purity; keep the boundary sharp when you edit.
-
-- `t2s/pure.py` - the value-to-value core: splitting, wrapping, cache
-  policy, the stream state machine, the application state machine (keys,
-  engine events, skip chains). It imports no effect machinery - no
-  threads, subprocesses, files, sockets, clocks, or environment.
-- `t2s/synth.py` - the synthesis cache and the prefetch worker thread.
-- `t2s/engines.py` - playback engines around the pure stream state, plus
-  the CoreAudio rate probe.
-- `t2s/app.py` - `App`, the effectful shell: it folds keypresses and
-  engine events through pure transitions and performs the effect values
-  they return. `Config`/`config_from_args`/`open_app` live here; all
-  construction effects (device probe, cache pruning, terminal setup)
-  are in `open_app`, never in `App.__init__`.
-- `t2s/cli.py` - argument parsing and `main`, the outermost edge.
-
-## Tooling
-
-Both tools are configured in `pyproject.toml`; install with
-`uv sync --extra test` (or `.venv/bin/pip install -e .[test]` plus the
-`dev` group).
-
-- **ruff** - formats and lints everything (`t2s/`, `tests/`). The rule
-  set pulls in isort, pyupgrade, bugbear, comprehensions, simplify,
-  return, and perflint; fixes are preferred, and with comments banned
-  (rule 7) suppressions are impossible - the code must stand on its own.
-- **mypy** - `strict = true` over `t2s/` and `tests/`. Every function
-  is fully annotated. The untyped `miniaudio` edge is contained with
-  `Any`/`cast` and an `ignore_missing_imports` override; don't let
-  `Any` spread beyond it.
-
-## Testing
-
-- Pure functions: plain pytest with value assertions (see
-  `tests/test_split.py`, `tests/test_wrap.py`, and - for the whole
-  interactive logic, no pty needed - `tests/test_app_state.py`).
-- Effects: drive them through injected fakes (`tests/fake_say.py`,
-  `tests/fake_play.py`, the `--player test` engine) and assert on
-  captured outputs. Tests never touch real audio.
-
-## Before you finish
+## Before finishing
 
 ```sh
-ruff format .
-ruff check .
-mypy
-.venv/bin/python -m pytest -q
+uv format --preview-features format-command
+uv run ruff check
+uv run mypy --strict
+uv run pytest -q
 ```
-
-All four must pass (`ruff`/`mypy` via the project venv, or prefix with
-`uv run`).

@@ -13,8 +13,8 @@ FAKE_PLAY_SRC = Path(__file__).resolve().parent / "fake_play.py"
 
 @dataclass(frozen=True)
 class Fakes:
-    say_bin: str
-    play_bin: str
+    say_binary: str
+    play_binary: str
     play_log: Path
     say_log: Path
 
@@ -30,23 +30,27 @@ def texts_played(say_log: Path, play_log: Path) -> list[str]:
             mapping[path] = text
     if not play_log.exists():
         return []
-    return [mapping.get(p, p) for p in play_log.read_text().splitlines() if p.strip()]
+    return [
+        mapping.get(path, path)
+        for path in play_log.read_text().splitlines()
+        if path.strip()
+    ]
 
 
-def engine_log_env(
+def engine_log_environment(
     tmp_path: Path, delay: str = "0.05", fail_at: str | None = None
 ) -> tuple[dict[str, str], Path]:
     log = tmp_path / "engine-play.log"
-    env = {"T2S_TEST_PLAY_LOG": str(log), "T2S_TEST_PLAY_DELAY": delay}
+    environment = {"T2S_TEST_PLAY_LOG": str(log), "T2S_TEST_PLAY_DELAY": delay}
     if fail_at:
-        env["T2S_TEST_PLAY_FAIL_AT"] = fail_at
-    return env, log
+        environment["T2S_TEST_PLAY_FAIL_AT"] = fail_at
+    return environment, log
 
 
-def _wrapper(tmp_path: Path, name: str, src: Path, env: dict[str, Path]) -> str:
+def _wrapper(tmp_path: Path, name: str, src: Path, environment: dict[str, Path]) -> str:
     script = tmp_path / name
     lines = ["#!/bin/sh"]
-    for key, value in env.items():
+    for key, value in environment.items():
         lines += [f"{key}='{value}'", f"export {key}"]
     lines += [f"exec '{sys.executable}' '{src}' \"$@\""]
     script.write_text("\n".join(lines) + "\n")
@@ -62,25 +66,30 @@ def fakes(tmp_path: Path) -> Fakes:
     say_log = tmp_path / "say.log"
     say = _wrapper(tmp_path, "fake_say", FAKE_SAY_SRC, {"FAKE_SAY_LOG": say_log})
     play = _wrapper(tmp_path, "fake_play", FAKE_PLAY_SRC, {"FAKE_PLAY_LOG": play_log})
-    return Fakes(say_bin=say, play_bin=play, play_log=play_log, say_log=say_log)
+    return Fakes(say_binary=say, play_binary=play, play_log=play_log, say_log=say_log)
 
 
 def run_t2s(
-    args: list[str],
+    arguments: list[str],
     fakes: Fakes | None = None,
-    env_extra: dict[str, str] | None = None,
+    environment_extra: dict[str, str] | None = None,
     input: bytes | None = None,
     timeout: float = 30.0,
 ) -> subprocess.CompletedProcess[str]:
-    cmd = [sys.executable, "-m", "t2s"]
+    command = [sys.executable, "-m", "t2s"]
     if fakes is not None:
-        cmd += ["--say-bin", fakes.say_bin, "--play-bin", fakes.play_bin]
-    cmd += args
-    env = os.environ.copy()
-    if env_extra:
-        env.update(env_extra)
+        command += ["--say-bin", fakes.say_binary, "--play-bin", fakes.play_binary]
+    command += arguments
+    environment = os.environ.copy()
+    if environment_extra:
+        environment.update(environment_extra)
     result = subprocess.run(
-        cmd, input=input, capture_output=True, env=env, timeout=timeout, cwd=REPO
+        command,
+        input=input,
+        capture_output=True,
+        env=environment,
+        timeout=timeout,
+        cwd=REPO,
     )
     return subprocess.CompletedProcess(
         result.args,

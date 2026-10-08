@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 
 from t2s.pure import CacheFile, cache_key, evictions, prefetch_window
-from t2s.synth import (
+from t2s.synthesis import (
     SynthesisFailed,
-    SynthWorker,
+    SynthesisWorker,
     clear_failure,
     ensure,
     make_worker,
@@ -36,7 +36,7 @@ def wait_until(
 
 def spawn_worker(
     tmp_path: Path, paragraphs: list[str], ahead: int = 3
-) -> tuple[SynthWorker, Path]:
+) -> tuple[SynthesisWorker, Path]:
     cache_keys = [
         cache_key(paragraph, None, None, "LEI16@22050") for paragraph in paragraphs
     ]
@@ -49,7 +49,7 @@ def spawn_worker(
     return worker, cache
 
 
-def rendered_path(worker: SynthWorker, index: int) -> Path:
+def rendered_path(worker: SynthesisWorker, index: int) -> Path:
     rendered = ensure(worker, index)
     assert isinstance(rendered, Path)
     return rendered
@@ -98,15 +98,19 @@ def test_prefetch_window_edges() -> None:
 
 
 def test_prefetch_window(tmp_path: Path) -> None:
-    paragraphs = [f"paragraph number {i}" for i in range(8)]
+    paragraphs = [f"paragraph number {index}" for index in range(8)]
     worker, _ = spawn_worker(tmp_path, paragraphs, ahead=2)
     try:
         set_cursor(worker, 0)
         assert rendered_path(worker, 0).exists()
-        assert wait_until(lambda: all(path_for(worker, i).exists() for i in (1, 2)))
+        assert wait_until(
+            lambda: all(path_for(worker, index).exists() for index in (1, 2))
+        )
         assert not path_for(worker, 3).exists()
         set_cursor(worker, 5)
-        assert wait_until(lambda: all(path_for(worker, i).exists() for i in (5, 6, 7)))
+        assert wait_until(
+            lambda: all(path_for(worker, index).exists() for index in (5, 6, 7))
+        )
         assert not path_for(worker, 4).exists()
     finally:
         stop_worker(worker)
@@ -140,7 +144,7 @@ def test_prune_evicts_oldest_and_removes_parts(tmp_path: Path) -> None:
     past = time.time() - 10_000
     os.utime(old, (past, past))
 
-    prune_cache(cache, limit_mb=200 / 1024 / 1024)
+    prune_cache(cache, limit_megabytes=200 / 1024 / 1024)
 
     assert not old.exists()
     assert new.exists()
@@ -151,5 +155,5 @@ def test_prune_zero_limit_keeps_everything(tmp_path: Path) -> None:
     cache = tmp_path / "c"
     cache.mkdir()
     (cache / "a.wav").write_bytes(b"x" * 5000)
-    prune_cache(cache, limit_mb=0)
+    prune_cache(cache, limit_megabytes=0)
     assert (cache / "a.wav").exists()

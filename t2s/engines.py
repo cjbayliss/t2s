@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from .pure import (
+from t2s.pure import (
     EngineEvent,
     StreamCrashed,
     StreamFinished,
@@ -31,8 +31,8 @@ from .pure import (
 
 
 def probe_output_rate() -> int:
-    prop_default_output_device = 0x644F7574
-    prop_nominal_sample_rate = 0x6E737274
+    property_default_output_device = 0x644F7574
+    property_nominal_sample_rate = 0x6E737274
     scope_output = 0x6F7574
     try:
         import ctypes
@@ -76,10 +76,10 @@ def probe_output_rate() -> int:
             )
             return int(value.value) if status == 0 else 0
 
-        device_id = _get_property(1, prop_default_output_device, 4, ctypes.c_uint32)
+        device_id = _get_property(1, property_default_output_device, 4, ctypes.c_uint32)
         if device_id:
             return _get_property(
-                device_id, prop_nominal_sample_rate, 8, ctypes.c_double
+                device_id, property_nominal_sample_rate, 8, ctypes.c_double
             )
         return 0
     except OSError, AttributeError:
@@ -110,8 +110,8 @@ def load_audio_library() -> AudioLibrary | None:
 def load_miniaudio(audio: AudioLibrary, path: Path) -> bytes:
     try:
         decoded = audio.module.wav_read_file_s16(str(path))
-    except audio.module.MiniaudioError as exc:
-        raise RuntimeError(str(exc)) from exc
+    except audio.module.MiniaudioError as exception:
+        raise RuntimeError(str(exception)) from exception
     return cast(bytes, decoded.samples.tobytes())
 
 
@@ -124,8 +124,8 @@ def load_failures() -> tuple[type[BaseException], ...]:
     return (OSError, EOFError, wave.Error, RuntimeError)
 
 
-def failure_detail(exc: BaseException) -> str:
-    return " ".join(f"{type(exc).__name__}: {exc}".split())[:200]
+def failure_detail(exception: BaseException) -> str:
+    return " ".join(f"{type(exception).__name__}: {exception}".split())[:200]
 
 
 def load_wav(engine: StreamEngine, path: Path) -> bytes:
@@ -149,7 +149,7 @@ class StreamEngine:
     lock: threading.Lock
     events: queue.SimpleQueue[EngineEvent]
     chunk_bytes: int
-    gap_ms: int
+    gap_milliseconds: int
     fail_at: int
     delay: float
     log_path: str | None
@@ -164,7 +164,7 @@ def make_stream_engine(
     *,
     load: Callable[[StreamEngine, Path], bytes] = load_wav,
     chunk_bytes: int = 1102,
-    gap_ms: int = 0,
+    gap_milliseconds: int = 0,
     fail_at: int = 0,
     rate: int = 22050,
     channels: int = 1,
@@ -178,7 +178,7 @@ def make_stream_engine(
         lock=threading.Lock(),
         events=queue.SimpleQueue(),
         chunk_bytes=chunk_bytes,
-        gap_ms=gap_ms,
+        gap_milliseconds=gap_milliseconds,
         fail_at=fail_at,
         delay=delay,
         log_path=log_path,
@@ -188,7 +188,7 @@ def make_stream_engine(
             stream=StreamState(),
             closed=False,
             channels=channels,
-            gap_size_bytes=gap_bytes(gap_ms, rate, channels),
+            gap_size_bytes=gap_bytes(gap_milliseconds, rate, channels),
             device=None,
             drain_thread=None,
         ),
@@ -199,7 +199,7 @@ def make_stream_engine(
 
 def set_stream_format(engine: StreamEngine, rate: int, channels: int) -> None:
     engine.cell.channels = channels
-    engine.cell.gap_size_bytes = gap_bytes(engine.gap_ms, rate, channels)
+    engine.cell.gap_size_bytes = gap_bytes(engine.gap_milliseconds, rate, channels)
 
 
 def ensure_device(engine: StreamEngine, path: Path) -> None:
@@ -220,8 +220,8 @@ def ensure_device(engine: StreamEngine, path: Path) -> None:
         pull = pull_frames(engine)
         next(pull)
         device.start(pull)
-    except module.MiniaudioError as exc:
-        raise RuntimeError(str(exc)) from exc
+    except module.MiniaudioError as exception:
+        raise RuntimeError(str(exception)) from exception
     engine.cell.device = device
 
 
@@ -289,9 +289,11 @@ def stream_engine_play(engine: StreamEngine, index: int, path: Path) -> None:
     try:
         ensure_device(engine, path)
         data = engine.load(engine, path)
-    except load_failures() as exc:
+    except load_failures() as exception:
         engine.events.put(
-            StreamCrashed(index, f"could not load {path.name}: {failure_detail(exc)}")
+            StreamCrashed(
+                index, f"could not load {path.name}: {failure_detail(exception)}"
+            )
         )
         return
     with engine.lock:
@@ -337,41 +339,45 @@ def stream_engine_close(engine: StreamEngine) -> None:
 
 
 @dataclass
-class ProcCell:
-    proc: subprocess.Popen[bytes] | None
+class ProcessCell:
+    process: subprocess.Popen[bytes] | None
     current_index: int | None
     suppress_report: bool
 
 
 @dataclass(frozen=True)
-class ProcEngine:
+class ProcessEngine:
     events: queue.SimpleQueue[EngineEvent]
-    cmd: tuple[str, ...]
-    cell: ProcCell
+    command: tuple[str, ...]
+    cell: ProcessCell
 
 
-def make_proc_engine(play_cmd: Sequence[str]) -> ProcEngine:
-    return ProcEngine(
+def make_process_engine(play_command: Sequence[str]) -> ProcessEngine:
+    return ProcessEngine(
         events=queue.SimpleQueue(),
-        cmd=tuple(play_cmd),
-        cell=ProcCell(proc=None, current_index=None, suppress_report=True),
+        command=tuple(play_command),
+        cell=ProcessCell(process=None, current_index=None, suppress_report=True),
     )
 
 
-def proc_engine_play(engine: ProcEngine, index: int, path: Path) -> None:
-    proc_engine_stop_stream(engine)
-    proc = subprocess.Popen(
-        (*engine.cmd, str(path)), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+def process_engine_play(engine: ProcessEngine, index: int, path: Path) -> None:
+    process_engine_stop_stream(engine)
+    process = subprocess.Popen(
+        (*engine.command, str(path)), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
     )
-    engine.cell.proc = proc
+    engine.cell.process = process
     engine.cell.current_index = index
     engine.cell.suppress_report = False
-    threading.Thread(target=watch_proc, args=(engine, index, proc), daemon=True).start()
+    threading.Thread(
+        target=watch_process, args=(engine, index, process), daemon=True
+    ).start()
 
 
-def watch_proc(engine: ProcEngine, index: int, proc: subprocess.Popen[bytes]) -> None:
-    stderr = proc.stderr.read() if proc.stderr is not None else b""
-    exit_code = proc.wait()
+def watch_process(
+    engine: ProcessEngine, index: int, process: subprocess.Popen[bytes]
+) -> None:
+    stderr = process.stderr.read() if process.stderr is not None else b""
+    exit_code = process.wait()
     if engine.cell.suppress_report:
         return
     if exit_code == 0:
@@ -383,59 +389,59 @@ def watch_proc(engine: ProcEngine, index: int, proc: subprocess.Popen[bytes]) ->
         )
 
 
-def proc_engine_stop_stream(engine: ProcEngine) -> None:
-    proc = engine.cell.proc
-    if proc is not None and proc.poll() is None:
+def process_engine_stop_stream(engine: ProcessEngine) -> None:
+    process = engine.cell.process
+    if process is not None and process.poll() is None:
         engine.cell.suppress_report = True
         with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
+            process.terminate()
         try:
-            proc.wait(timeout=2)
+            process.wait(timeout=2)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            process.kill()
     engine.cell.current_index = None
 
 
-def proc_engine_current_index(engine: ProcEngine) -> int | None:
-    proc = engine.cell.proc
-    if proc is None or engine.cell.current_index is None:
+def process_engine_current_index(engine: ProcessEngine) -> int | None:
+    process = engine.cell.process
+    if process is None or engine.cell.current_index is None:
         return None
-    return engine.cell.current_index if proc.poll() is None else None
+    return engine.cell.current_index if process.poll() is None else None
 
 
-def proc_engine_close(engine: ProcEngine) -> None:
-    proc_engine_stop_stream(engine)
+def process_engine_close(engine: ProcessEngine) -> None:
+    process_engine_stop_stream(engine)
 
 
 def make_test_engine(
-    gap_ms: int = 0, env: Mapping[str, str] | None = None
+    gap_milliseconds: int = 0, environment: Mapping[str, str] | None = None
 ) -> StreamEngine:
-    env_vars = env if env is not None else {}
+    environment_variables = environment if environment is not None else {}
     return make_stream_engine(
-        gap_ms=gap_ms,
-        fail_at=int(env_vars.get("T2S_TEST_PLAY_FAIL_AT", "0") or 0),
-        delay=float(env_vars.get("T2S_TEST_PLAY_DELAY", "0.05") or 0),
-        log_path=env_vars.get("T2S_TEST_PLAY_LOG"),
+        gap_milliseconds=gap_milliseconds,
+        fail_at=int(environment_variables.get("T2S_TEST_PLAY_FAIL_AT", "0") or 0),
+        delay=float(environment_variables.get("T2S_TEST_PLAY_DELAY", "0.05") or 0),
+        log_path=environment_variables.get("T2S_TEST_PLAY_LOG"),
         drain=True,
     )
 
 
-type Engine = StreamEngine | ProcEngine
+type Engine = StreamEngine | ProcessEngine
 
 
 def engine_play(engine: Engine, index: int, path: Path) -> None:
     match engine:
         case StreamEngine():
             stream_engine_play(engine, index, path)
-        case ProcEngine():
-            proc_engine_play(engine, index, path)
+        case ProcessEngine():
+            process_engine_play(engine, index, path)
 
 
 def engine_prime(engine: Engine, index: int, path: Path) -> None:
     match engine:
         case StreamEngine():
             stream_engine_prime(engine, index, path)
-        case ProcEngine():
+        case ProcessEngine():
             pass
 
 
@@ -443,31 +449,31 @@ def engine_stop_stream(engine: Engine) -> None:
     match engine:
         case StreamEngine():
             stream_engine_stop_stream(engine)
-        case ProcEngine():
-            proc_engine_stop_stream(engine)
+        case ProcessEngine():
+            process_engine_stop_stream(engine)
 
 
 def engine_current_index(engine: Engine) -> int | None:
     match engine:
         case StreamEngine():
             return stream_engine_current_index(engine)
-        case ProcEngine():
-            return proc_engine_current_index(engine)
+        case ProcessEngine():
+            return process_engine_current_index(engine)
 
 
 def engine_close(engine: Engine) -> None:
     match engine:
         case StreamEngine():
             stream_engine_close(engine)
-        case ProcEngine():
-            proc_engine_close(engine)
+        case ProcessEngine():
+            process_engine_close(engine)
 
 
 def make_engine(
     player: str,
-    play_cmd: Sequence[str],
-    gap_ms: int = 0,
-    env: Mapping[str, str] | None = None,
+    play_command: Sequence[str],
+    gap_milliseconds: int = 0,
+    environment: Mapping[str, str] | None = None,
     audio: AudioLibrary | None = None,
 ) -> Engine:
     choice = engine_choice(player, audio is not None)
@@ -483,13 +489,15 @@ def make_engine(
             "(pip install miniaudio for gapless playback)",
             file=sys.stderr,
         )
-    if gap_ms > 0 and not gap_supported(choice):
+    if gap_milliseconds > 0 and not gap_supported(choice):
         print(
             "t2s: --gap is only supported by the miniaudio engine - ignoring",
             file=sys.stderr,
         )
     if choice == "miniaudio":
-        return make_stream_engine(gap_ms=gap_ms, audio=audio, prime_async=True)
+        return make_stream_engine(
+            gap_milliseconds=gap_milliseconds, audio=audio, prime_async=True
+        )
     if choice == "test":
-        return make_test_engine(gap_ms, env)
-    return make_proc_engine(play_cmd)
+        return make_test_engine(gap_milliseconds, environment)
+    return make_process_engine(play_command)

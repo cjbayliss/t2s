@@ -12,7 +12,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
-from .engines import (
+from t2s.engines import (
     Engine,
     default_data_format,
     engine_close,
@@ -23,7 +23,7 @@ from .engines import (
     load_audio_library,
     make_engine,
 )
-from .pure import (
+from t2s.pure import (
     AppState,
     ClearFailure,
     Effect,
@@ -35,19 +35,19 @@ from .pure import (
     TryPlay,
     Warn,
     apply_play_outcome,
-    build_say_cmd,
+    build_say_command,
     cache_key,
     decode_chunk,
     handle_engine_event,
     handle_key,
-    resolve_cache_dir,
-    resolve_play_bin,
-    resolve_say_bin,
+    resolve_cache_directory,
+    resolve_play_binary,
+    resolve_say_binary,
     wrap_offsets,
 )
-from .synth import (
+from t2s.synthesis import (
     SynthesisFailed,
-    SynthWorker,
+    SynthesisWorker,
     clear_failure,
     ensure,
     make_worker,
@@ -60,7 +60,7 @@ from .synth import (
 
 
 @dataclass(frozen=True)
-class Args:
+class Arguments:
     file: str
     voice: str | None
     rate: int | None
@@ -68,31 +68,31 @@ class Args:
     start: int
     split_long: int | None
     ahead: int
-    cache_dir: str | None
-    cache_limit_mb: float
-    say_bin: str | None
-    play_bin: str | None
-    gap_ms: int
+    cache_directory: str | None
+    cache_limit_megabytes: float
+    say_binary: str | None
+    play_binary: str | None
+    gap_milliseconds: int
     data_format: str | None
     player: str
 
 
-def args_from_namespace(ns: argparse.Namespace) -> Args:
-    return Args(
-        file=ns.file,
-        voice=ns.voice,
-        rate=ns.rate,
-        width=ns.width,
-        start=ns.start,
-        split_long=ns.split_long,
-        ahead=ns.ahead,
-        cache_dir=ns.cache_dir,
-        cache_limit_mb=ns.cache_limit_mb,
-        say_bin=ns.say_bin,
-        play_bin=ns.play_bin,
-        gap_ms=ns.gap,
-        data_format=ns.data_format,
-        player=ns.player,
+def arguments_from_namespace(namespace_arguments: argparse.Namespace) -> Arguments:
+    return Arguments(
+        file=namespace_arguments.file,
+        voice=namespace_arguments.voice,
+        rate=namespace_arguments.rate,
+        width=namespace_arguments.width,
+        start=namespace_arguments.start,
+        split_long=namespace_arguments.split_long,
+        ahead=namespace_arguments.ahead,
+        cache_directory=namespace_arguments.cache_directory,
+        cache_limit_megabytes=namespace_arguments.cache_limit_megabytes,
+        say_binary=namespace_arguments.say_binary,
+        play_binary=namespace_arguments.play_binary,
+        gap_milliseconds=namespace_arguments.gap,
+        data_format=namespace_arguments.data_format,
+        player=namespace_arguments.player,
     )
 
 
@@ -103,31 +103,31 @@ class Config:
     width: int
     voice: str | None
     rate: int | None
-    say_bin: str | None
-    play_bin: str | None
-    cache_dir: str | None
-    cache_limit_mb: float
+    say_binary: str | None
+    play_binary: str | None
+    cache_directory: str | None
+    cache_limit_megabytes: float
     ahead: int
     player: str
-    gap_ms: int
+    gap_milliseconds: int
     data_format: str | None
 
 
-def config_from_args(args: Args, paragraphs: tuple[str, ...]) -> Config:
+def config_from_arguments(arguments: Arguments, paragraphs: tuple[str, ...]) -> Config:
     return Config(
         paragraphs=paragraphs,
-        start_index=args.start - 1,
-        width=args.width,
-        voice=args.voice,
-        rate=args.rate,
-        say_bin=args.say_bin,
-        play_bin=args.play_bin,
-        cache_dir=args.cache_dir,
-        cache_limit_mb=args.cache_limit_mb,
-        ahead=args.ahead,
-        player=args.player,
-        gap_ms=args.gap_ms,
-        data_format=args.data_format,
+        start_index=arguments.start - 1,
+        width=arguments.width,
+        voice=arguments.voice,
+        rate=arguments.rate,
+        say_binary=arguments.say_binary,
+        play_binary=arguments.play_binary,
+        cache_directory=arguments.cache_directory,
+        cache_limit_megabytes=arguments.cache_limit_megabytes,
+        ahead=arguments.ahead,
+        player=arguments.player,
+        gap_milliseconds=arguments.gap_milliseconds,
+        data_format=arguments.data_format,
     )
 
 
@@ -138,52 +138,59 @@ class KeyCell:
 
 @dataclass(frozen=True)
 class KeySource:
-    fd: int
+    file_descriptor: int
     restore: tuple[int | list[bytes | int], ...]
-    close_fd: bool
+    close_file_descriptor: bool
     cell: KeyCell
 
 
 def open_key_source() -> KeySource | None:
     if sys.stdin.isatty():
-        fd = sys.stdin.fileno()
-        close_fd = False
+        file_descriptor = sys.stdin.fileno()
+        close_file_descriptor = False
     else:
         try:
-            fd = os.open("/dev/tty", os.O_RDONLY)
+            file_descriptor = os.open("/dev/tty", os.O_RDONLY)
         except OSError:
             return None
-        close_fd = True
+        close_file_descriptor = True
     try:
-        restore = tuple(termios.tcgetattr(fd))
-        tty.setcbreak(fd)
+        restore = tuple(termios.tcgetattr(file_descriptor))
+        tty.setcbreak(file_descriptor)
     except termios.error:
-        if close_fd:
-            os.close(fd)
+        if close_file_descriptor:
+            os.close(file_descriptor)
         return None
     return KeySource(
-        fd=fd, restore=restore, close_fd=close_fd, cell=KeyCell(pending=b"")
+        file_descriptor=file_descriptor,
+        restore=restore,
+        close_file_descriptor=close_file_descriptor,
+        cell=KeyCell(pending=b""),
     )
 
 
 def open_app(config: Config) -> App:
-    env = os.environ
-    say_bin = resolve_say_bin(config.say_bin, env)
+    environment = os.environ
+    say_binary = resolve_say_binary(config.say_binary, environment)
     data_format = config.data_format or default_data_format()
-    say_cmd = build_say_cmd(say_bin, config.voice, config.rate, data_format)
+    say_command = build_say_command(say_binary, config.voice, config.rate, data_format)
     cache_keys = tuple(
         cache_key(paragraph, config.voice, config.rate, data_format)
         for paragraph in config.paragraphs
     )
-    cache_dir = resolve_cache_dir(config.cache_dir, Path.home())
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    prune_cache(cache_dir, config.cache_limit_mb)
-    synth_worker = make_worker(
-        config.paragraphs, cache_keys, cache_dir, say_cmd, ahead=config.ahead
+    cache_directory = resolve_cache_directory(config.cache_directory, Path.home())
+    cache_directory.mkdir(parents=True, exist_ok=True)
+    prune_cache(cache_directory, config.cache_limit_megabytes)
+    synthesis_worker = make_worker(
+        config.paragraphs, cache_keys, cache_directory, say_command, ahead=config.ahead
     )
-    play_cmd = (resolve_play_bin(config.play_bin, env),)
+    play_command = (resolve_play_binary(config.play_binary, environment),)
     engine = make_engine(
-        config.player, play_cmd, config.gap_ms, env, audio=load_audio_library()
+        config.player,
+        play_command,
+        config.gap_milliseconds,
+        environment,
+        audio=load_audio_library(),
     )
     return App(
         paragraphs=config.paragraphs,
@@ -191,7 +198,7 @@ def open_app(config: Config) -> App:
         width=config.width,
         use_ansi=sys.stdout.isatty(),
         key_source=open_key_source(),
-        synth_worker=synth_worker,
+        synthesis_worker=synthesis_worker,
         engine=engine,
     )
 
@@ -203,7 +210,7 @@ class App:
     width: int
     use_ansi: bool
     key_source: KeySource | None
-    synth_worker: SynthWorker
+    synthesis_worker: SynthesisWorker
     engine: Engine
 
 
@@ -222,7 +229,7 @@ def perform(app: App, state: AppState, effect: Effect) -> tuple[AppState, Effect
         case StopStream():
             engine_stop_stream(app.engine)
         case ClearFailure(index):
-            clear_failure(app.synth_worker, index)
+            clear_failure(app.synthesis_worker, index)
         case SyncTo(index):
             sync_to(app, index)
         case Note(text):
@@ -234,16 +241,16 @@ def perform(app: App, state: AppState, effect: Effect) -> tuple[AppState, Effect
 
 def try_play(app: App, index: int, note_text: str | None = None) -> PlayOutcome:
     engine_stop_stream(app.engine)
-    set_cursor(app.synth_worker, index)
+    set_cursor(app.synthesis_worker, index)
     show_paragraph(app, index, note_text)
-    match ensure(app.synth_worker, index):
+    match ensure(app.synthesis_worker, index):
         case SynthesisFailed(detail=detail):
-            msg = f"! could not render paragraph: {detail}"
+            message = f"! could not render paragraph: {detail}"
             if app.key_source is not None:
-                emit_warn(app, msg)
+                emit_warn(app, message)
                 emit_note(app, "space: retry, n/p: paragraph, q: quit")
                 return "paused"
-            emit_warn(app, msg + " - continuing with next paragraph")
+            emit_warn(app, message + " - continuing with next paragraph")
             return "failed"
         case path:
             engine_play(app.engine, index, path)
@@ -254,13 +261,13 @@ def try_play(app: App, index: int, note_text: str | None = None) -> PlayOutcome:
 def prime_next(app: App, index: int) -> None:
     next_index = index + 1
     if next_index < len(app.paragraphs):
-        path = path_for(app.synth_worker, next_index)
+        path = path_for(app.synthesis_worker, next_index)
         if path.exists():
             engine_prime(app.engine, next_index, path)
 
 
 def sync_to(app: App, index: int) -> None:
-    set_cursor(app.synth_worker, index)
+    set_cursor(app.synthesis_worker, index)
     show_paragraph(app, index)
     prime_next(app, index)
 
@@ -268,10 +275,10 @@ def sync_to(app: App, index: int) -> None:
 def run(app: App) -> int:
     state = AppState(
         index=app.start_index,
-        n_paragraphs=len(app.paragraphs),
+        paragraph_count=len(app.paragraphs),
         interactive=app.key_source is not None,
     )
-    start_worker(app.synth_worker)
+    start_worker(app.synthesis_worker)
     code = 0
     try:
         state = interpret(app, state, (TryPlay(state.index),))
@@ -285,7 +292,7 @@ def run(app: App) -> int:
         restore_terminal(app)
         engine_stop_stream(app.engine)
         engine_close(app.engine)
-        stop_worker(app.synth_worker)
+        stop_worker(app.synthesis_worker)
         if app.use_ansi:
             sys.stdout.write("\x1b[0m\x1b[?25h")
             sys.stdout.flush()
@@ -297,10 +304,12 @@ def restore_terminal(app: App) -> None:
     if key_source is None:
         return
     with contextlib.suppress(termios.error):
-        termios.tcsetattr(key_source.fd, termios.TCSADRAIN, list(key_source.restore))
-    if key_source.close_fd:
+        termios.tcsetattr(
+            key_source.file_descriptor, termios.TCSADRAIN, list(key_source.restore)
+        )
+    if key_source.close_file_descriptor:
         with contextlib.suppress(OSError):
-            os.close(key_source.fd)
+            os.close(key_source.file_descriptor)
 
 
 def tick(app: App, state: AppState) -> AppState:
@@ -309,14 +318,16 @@ def tick(app: App, state: AppState) -> AppState:
 
 def poll_keys(app: App, state: AppState) -> AppState:
     key_source = app.key_source
-    fds: list[int] = [key_source.fd] if key_source is not None else []
+    file_descriptors: list[int] = (
+        [key_source.file_descriptor] if key_source is not None else []
+    )
     try:
-        ready, _, _ = select.select(fds, [], [], 0.05)
+        ready, _, _ = select.select(file_descriptors, [], [], 0.05)
     except OSError, ValueError:
         ready = []
-    if key_source is not None and key_source.fd in ready:
+    if key_source is not None and key_source.file_descriptor in ready:
         try:
-            data = os.read(key_source.fd, 256)
+            data = os.read(key_source.file_descriptor, 256)
         except OSError:
             data = b""
         text, key_source.cell.pending = decode_chunk(key_source.cell.pending, data)

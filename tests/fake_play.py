@@ -4,8 +4,8 @@ import time
 
 
 def main() -> int:
-    args = sys.argv[1:]
-    path = args[-1] if args else "?"
+    arguments = sys.argv[1:]
+    path = arguments[-1] if arguments else "?"
 
     log_path = os.environ.get("FAKE_PLAY_LOG")
     count = 0
