@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+from importlib import metadata
 from pathlib import Path
 
-from t2s import __version__
 from t2s.app import arguments_from_namespace, config_from_arguments, open_app, run
 from t2s.pure import split_paragraphs
 
@@ -110,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
         "test (headless, for t2s's own tests), or auto "
         "(default: miniaudio, falls back to afplay)",
     )
-    parser.add_argument("--version", action="version", version=__version__)
+    parser.add_argument("--version", action="version", version=metadata.version("t2s"))
     return parser
 
 

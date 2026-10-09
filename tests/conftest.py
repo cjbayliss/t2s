@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
+os.environ.setdefault("COVERAGE_PROCESS_START", str(REPO / "pyproject.toml"))
 FAKE_SAY_SRC = Path(__file__).resolve().parent / "fake_say.py"
 FAKE_PLAY_SRC = Path(__file__).resolve().parent / "fake_play.py"
 

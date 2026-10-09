@@ -1,58 +1,55 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "t2s"
-dynamic = ["version"]
 description = "Read documents aloud with macOS say(1), paragraph by paragraph - gapless in-process playback, pausable, 72-column display, resilient to audio device changes."
 readme = "README.md"
 requires-python = ">=3.14"
+version = "0.7.0"
 dependencies = ["miniaudio>=1.61"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=6",
+    "ruff>=0.9",
+    "mypy>=1.15",
+    "hypothesis>=6",
+]
 
 [project.scripts]
 t2s = "t2s.cli:main"
 
-[project.optional-dependencies]
-test = ["hypothesis>=6", "pytest>=8"]
-
-[dependency-groups]
-dev = ["hypothesis>=6", "mypy>=1.15", "pytest>=8", "pytest-cov>=6", "ruff>=0.9"]
-
-[tool.setuptools]
-packages = ["t2s"]
-
-[tool.setuptools.dynamic]
-version = { attr = "t2s.__version__" }
-
 [tool.pytest.ini_options]
+pythonpath = ["src", "."]
 testpaths = ["tests"]
-pythonpath = ["."]
+addopts = "--cov=t2s --cov-report=term-missing"
 
 [tool.coverage.run]
+branch = true
 source = ["t2s"]
 parallel = true
 
+[tool.coverage.report]
+exclude_lines = ["assert_never", "\\(Protocol\\)", "if __name__ == .__main__.:"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+
 [tool.ruff.lint]
-select = [
-    "E4",
-    "E7",
-    "E9",
-    "F",
-    "I",
-    "UP",
-    "B",
-    "C4",
-    "SIM",
-    "RET",
-    "PERF",
-]
+select = ["C4", "E", "F", "PERF", "FURB", "W", "I", "B", "SIM", "RET", "UP", "PLW0602", "PLW0603"]
 
 [tool.mypy]
-python_version = "3.14"
 strict = true
-files = ["t2s", "tests"]
+warn_unreachable = true
+explicit_package_bases = true
+python_version = "3.14"
+mypy_path = ["src", "tests"]
+files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
 module = "miniaudio"
 ignore_missing_imports = true
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
