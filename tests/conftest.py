@@ -87,10 +87,12 @@ def run_t2s(
     result = subprocess.run(
         command,
         input=input,
+        stdin=subprocess.DEVNULL if input is None else None,
         capture_output=True,
         env=environment,
         timeout=timeout,
         cwd=REPO,
+        start_new_session=True,
     )
     return subprocess.CompletedProcess(
         result.args,
