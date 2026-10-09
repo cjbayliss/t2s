@@ -17,10 +17,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --extra test
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run mypy
-      - run: uv run pytest -q --cov=t2s --cov-report=term-missing
-        env:
-          COVERAGE_PROCESS_START: pyproject.toml
+      - run: uv run pytest -q
