@@ -3,7 +3,7 @@ name = "t2s"
 description = "Read documents aloud with macOS say(1), paragraph by paragraph - gapless in-process playback, pausable, 72-column display, resilient to audio device changes."
 readme = "README.md"
 requires-python = ">=3.14"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = ["miniaudio>=1.61"]
 
 [dependency-groups]
