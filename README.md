@@ -23,7 +23,7 @@ uv run t2s
 ## Requirements
 
 - macOS (uses the built-in `say` and `afplay` command-line tools)
-- Python 3.14 or later
+- Python 3.15 or later
 - [`uv`](https://docs.astral.sh/uv/) for installation and development
 - The `miniaudio` Python package for gapless playback (installed
   automatically; without it, t2s falls back to `afplay`)
