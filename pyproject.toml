@@ -2,7 +2,7 @@
 name = "t2s"
 description = "Read documents aloud with macOS say(1), paragraph by paragraph - gapless in-process playback, pausable, 72-column display, resilient to audio device changes."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.15"
 version = "0.8.0"
 dependencies = ["miniaudio>=1.61"]
 
@@ -33,7 +33,7 @@ exclude_lines = ["assert_never", "\\(Protocol\\)", "if __name__ == .__main__.:"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py314"
+target-version = "py315"
 
 [tool.ruff.lint]
 select = ["C4", "E", "F", "PERF", "FURB", "W", "I", "B", "SIM", "RET", "UP", "PLW0602", "PLW0603"]
@@ -42,7 +42,7 @@ select = ["C4", "E", "F", "PERF", "FURB", "W", "I", "B", "SIM", "RET", "UP", "PL
 strict = true
 warn_unreachable = true
 explicit_package_bases = true
-python_version = "3.14"
+python_version = "3.15"
 mypy_path = ["src", "tests"]
 files = ["src", "tests"]
 
@@ -51,5 +51,5 @@ module = "miniaudio"
 ignore_missing_imports = true
 
 [build-system]
-requires = ["uv_build>=0.12.23,<0.13.0"]
+requires = ["uv_build>=0.13.0,<0.14.0"]
 build-backend = "uv_build"
