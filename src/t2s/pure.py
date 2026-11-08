@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import hashlib
 import re
 from collections.abc import Iterator, Mapping, Sequence
@@ -7,7 +5,7 @@ from dataclasses import dataclass, field, replace
 from itertools import accumulate, chain
 from operator import attrgetter
 from pathlib import Path
-from typing import Literal
+from typing import Literal, final
 
 
 def nominal_output_rate(reported_rate: int) -> int:
@@ -140,7 +138,8 @@ def cache_key(text: str, voice: str | None, rate: int | None, data_format: str) 
     return hashlib.sha1(material.encode("utf-8")).hexdigest()
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class CacheFile:
     path: Path
     size: int
@@ -160,7 +159,8 @@ def evictions(cache_files: Sequence[CacheFile], limit_bytes: float) -> tuple[Pat
     return tuple(cache_file.path for cache_file in ordered[:evict_count])
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class StreamState:
     sources: Mapping[int, bytes] = field(default_factory=dict[int, bytes])
     paths: Mapping[int, Path] = field(default_factory=dict[int, Path])
@@ -232,23 +232,27 @@ def stream_stop(state: StreamState) -> StreamState:
     )
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class StreamStarted:
     index: int
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class StreamFinished:
     index: int
     chained: bool
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class StreamChained:
     index: int
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class StreamCrashed:
     index: int
     detail: str
@@ -322,7 +326,8 @@ type PlayMode = Literal["playing", "paused", "stopped"]
 type PlayOutcome = Literal["playing", "paused", "failed"]
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class AppState:
     index: int
     paragraph_count: int
@@ -332,33 +337,39 @@ class AppState:
     interactive: bool = False
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class TryPlay:
     index: int
     note: str | None = None
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class StopStream:
     pass
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class ClearFailure:
     index: int
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class SyncTo:
     index: int
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class Note:
     text: str
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class Warn:
     text: str
 
@@ -370,32 +381,36 @@ type Effects = tuple[Effect, ...]
 def handle_key(
     state: AppState, key: str, engine_index: int | None = None
 ) -> tuple[AppState, Effects]:
-    if key in ("q", "Q", "\x03"):
-        return replace(state, running=False), (
-            Note(f"stopped at {state.index + 1}/{state.paragraph_count}"),
-        )
-    if key == " ":
-        if state.mode == "playing":
-            if engine_index is not None:
-                return replace(state, mode="paused"), (
-                    StopStream(),
-                    Note("paused - space: replay paragraph, n/p: paragraph, q: quit"),
-                )
-            return state, ()
-        if state.mode == "paused":
-            return state, (
-                ClearFailure(state.index),
-                TryPlay(state.index, "resumed"),
+    match key:
+        case "q" | "Q" | "\x03":
+            return replace(state, running=False), (
+                Note(f"stopped at {state.index + 1}/{state.paragraph_count}"),
             )
-        return state, ()
-    if key in ("n", "N", "p", "P"):
-        delta = 1 if key in ("n", "N") else -1
-        target = state.index + delta
-        if not 0 <= target < state.paragraph_count:
-            edge = "last" if delta > 0 else "first"
-            return state, (Note(f"already at {edge} paragraph"),)
-        return state, (TryPlay(target),)
-    return state, ()
+        case " ":
+            match state.mode:
+                case "playing" if engine_index is not None:
+                    return replace(state, mode="paused"), (
+                        StopStream(),
+                        Note(
+                            "paused - space: replay paragraph, n/p: paragraph, q: quit"
+                        ),
+                    )
+                case "paused":
+                    return state, (
+                        ClearFailure(state.index),
+                        TryPlay(state.index, "resumed"),
+                    )
+                case _:
+                    return state, ()
+        case "n" | "N" | "p" | "P":
+            delta = 1 if key in ("n", "N") else -1
+            target = state.index + delta
+            if not 0 <= target < state.paragraph_count:
+                edge = "last" if delta > 0 else "first"
+                return state, (Note(f"already at {edge} paragraph"),)
+            return state, (TryPlay(target),)
+        case _:
+            return state, ()
 
 
 def handle_engine_event(
@@ -484,15 +499,17 @@ type EngineChoice = Literal[
 
 
 def engine_choice(player: str, have_miniaudio: bool) -> EngineChoice:
-    if player == "afplay":
-        return "afplay"
-    if player == "test":
-        return "test"
-    if have_miniaudio:
-        return "miniaudio"
-    if player == "miniaudio":
-        return "missing-miniaudio"
-    return "afplay-fallback"
+    match player, have_miniaudio:
+        case "afplay", _:
+            return "afplay"
+        case "test", _:
+            return "test"
+        case _, True:
+            return "miniaudio"
+        case "miniaudio", _:
+            return "missing-miniaudio"
+        case _:
+            return "afplay-fallback"
 
 
 def gap_supported(choice: EngineChoice) -> bool:

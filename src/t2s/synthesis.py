@@ -1,11 +1,10 @@
-from __future__ import annotations
-
 import contextlib
 import subprocess
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import final
 
 from t2s.pure import CacheFile, evictions, prefetch_window
 
@@ -28,7 +27,8 @@ def prune_cache(cache_directory: Path, limit_megabytes: float) -> None:
         path.unlink(missing_ok=True)
 
 
-@dataclass
+@final
+@dataclass(slots=True)
 class WorkerCell:
     condition: threading.Condition
     cursor: int
@@ -36,7 +36,8 @@ class WorkerCell:
     stop_flag: bool
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class SynthesisWorker:
     paragraphs: tuple[str, ...]
     keys: tuple[str, ...]
@@ -82,7 +83,8 @@ def clear_failure(worker: SynthesisWorker, index: int) -> None:
             worker.cell.condition.notify_all()
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class SynthesisFailed:
     index: int
     detail: str

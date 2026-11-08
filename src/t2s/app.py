@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import contextlib
 import os
@@ -11,6 +9,7 @@ import tty
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+from typing import final
 
 from t2s.engines import (
     Engine,
@@ -59,7 +58,8 @@ from t2s.synthesis import (
 )
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class Arguments:
     file: str
     voice: str | None
@@ -96,7 +96,8 @@ def arguments_from_namespace(namespace_arguments: argparse.Namespace) -> Argumen
     )
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class Config:
     paragraphs: tuple[str, ...]
     start_index: int
@@ -131,12 +132,14 @@ def config_from_arguments(arguments: Arguments, paragraphs: tuple[str, ...]) -> 
     )
 
 
-@dataclass
+@final
+@dataclass(slots=True)
 class KeyCell:
     pending: bytes
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class KeySource:
     file_descriptor: int
     restore: tuple[int | list[bytes | int], ...]
@@ -203,7 +206,8 @@ def open_app(config: Config) -> App:
     )
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class App:
     paragraphs: tuple[str, ...]
     start_index: int
@@ -252,7 +256,7 @@ def try_play(app: App, index: int, note_text: str | None = None) -> PlayOutcome:
                 return "paused"
             emit_warn(app, message + " - continuing with next paragraph")
             return "failed"
-        case path:
+        case Path() as path:
             engine_play(app.engine, index, path)
             prime_next(app, index)
             return "playing"

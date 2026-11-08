@@ -3,6 +3,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import final
 
 import pytest
 
@@ -12,7 +13,8 @@ FAKE_SAY_SRC = Path(__file__).resolve().parent / "fake_say.py"
 FAKE_PLAY_SRC = Path(__file__).resolve().parent / "fake_play.py"
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class Fakes:
     say_binary: str
     play_binary: str

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import contextlib
 import queue
 import subprocess
@@ -7,10 +5,11 @@ import sys
 import threading
 import time
 import wave
+from array import array
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Protocol, cast, final
 
 from t2s.pure import (
     EngineEvent,
@@ -29,6 +28,37 @@ from t2s.pure import (
     stream_stop,
 )
 
+if TYPE_CHECKING:
+    import miniaudio
+
+
+type MiniaudioErrorType = type[miniaudio.MiniaudioError]
+type MiniaudioSampleFormatType = type[miniaudio.SampleFormat]
+type MiniaudioPlaybackDeviceType = type[miniaudio.PlaybackDevice]
+type MiniaudioWavReader = Callable[[str], miniaudio.DecodedSoundFile]
+
+
+class MiniaudioPlaybackDevice(Protocol):
+    sample_rate: int
+
+    def start(self, callback_generator: Generator[bytes | array[int], int]) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class MiniaudioModule(Protocol):
+    @property
+    def MiniaudioError(self) -> MiniaudioErrorType: ...
+
+    @property
+    def SampleFormat(self) -> MiniaudioSampleFormatType: ...
+
+    @property
+    def PlaybackDevice(self) -> MiniaudioPlaybackDeviceType: ...
+
+    @property
+    def wav_read_file_s16(self) -> MiniaudioWavReader: ...
+
 
 def probe_output_rate() -> int:
     property_default_output_device = 0x644F7574
@@ -37,6 +67,7 @@ def probe_output_rate() -> int:
     try:
         import ctypes
 
+        @final
         class _PropertyAddress(ctypes.Structure):
             _fields_ = [
                 ("selector", ctypes.c_uint32),
@@ -94,9 +125,10 @@ def default_data_format() -> str:
     return f"LEI16@{detect_output_rate()}"
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class AudioLibrary:
-    module: Any
+    module: MiniaudioModule
 
 
 def load_audio_library() -> AudioLibrary | None:
@@ -134,17 +166,19 @@ def load_wav(engine: StreamEngine, path: Path) -> bytes:
     return read_wave(path)
 
 
-@dataclass
+@final
+@dataclass(slots=True)
 class StreamCell:
     stream: StreamState
     closed: bool
     channels: int
     gap_size_bytes: int
-    device: Any
+    device: MiniaudioPlaybackDevice | None
     drain_thread: threading.Thread | None
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class StreamEngine:
     lock: threading.Lock
     events: queue.SimpleQueue[EngineEvent]
@@ -338,14 +372,16 @@ def stream_engine_close(engine: StreamEngine) -> None:
     close_device(engine)
 
 
-@dataclass
+@final
+@dataclass(slots=True)
 class ProcessCell:
     process: subprocess.Popen[bytes] | None
     current_index: int | None
     suppress_report: bool
 
 
-@dataclass(frozen=True)
+@final
+@dataclass(frozen=True, slots=True)
 class ProcessEngine:
     events: queue.SimpleQueue[EngineEvent]
     command: tuple[str, ...]
@@ -477,27 +513,32 @@ def make_engine(
     audio: AudioLibrary | None = None,
 ) -> Engine:
     choice = engine_choice(player, audio is not None)
-    if choice == "missing-miniaudio":
-        print(
-            "t2s: --player miniaudio but the 'miniaudio' package is not installed",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
-    if choice == "afplay-fallback":
-        print(
-            "t2s: miniaudio is not installed - falling back to afplay "
-            "(pip install miniaudio for gapless playback)",
-            file=sys.stderr,
-        )
+    match choice:
+        case "missing-miniaudio":
+            print(
+                "t2s: --player miniaudio but the 'miniaudio' package is not installed",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        case "afplay-fallback":
+            print(
+                "t2s: miniaudio is not installed - falling back to afplay "
+                "(pip install miniaudio for gapless playback)",
+                file=sys.stderr,
+            )
+        case _:
+            pass
     if gap_milliseconds > 0 and not gap_supported(choice):
         print(
             "t2s: --gap is only supported by the miniaudio engine - ignoring",
             file=sys.stderr,
         )
-    if choice == "miniaudio":
-        return make_stream_engine(
-            gap_milliseconds=gap_milliseconds, audio=audio, prime_async=True
-        )
-    if choice == "test":
-        return make_test_engine(gap_milliseconds, environment)
-    return make_process_engine(play_command)
+    match choice:
+        case "miniaudio":
+            return make_stream_engine(
+                gap_milliseconds=gap_milliseconds, audio=audio, prime_async=True
+            )
+        case "test":
+            return make_test_engine(gap_milliseconds, environment)
+        case _:
+            return make_process_engine(play_command)

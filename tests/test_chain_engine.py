@@ -4,7 +4,7 @@ import time
 import wave
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, cast, final
 
 import pytest
 
@@ -287,11 +287,13 @@ def test_failed_play_leaves_current_stream_alone(tmp_path: Path) -> None:
     ]
 
 
+@final
 class FakeMiniaudioError(Exception):
     pass
 
 
 def fake_decode_module() -> Any:
+    @final
     class Decoder:
         MiniaudioError = FakeMiniaudioError
 
