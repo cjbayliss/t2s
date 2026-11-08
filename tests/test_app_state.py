@@ -1,3 +1,4 @@
+from t2s.errors import SimulatedDeviceError
 from t2s.pure import (
     AppState,
     ClearFailure,
@@ -164,29 +165,33 @@ def test_finished_while_paused_is_ignored() -> None:
 
 def test_crash_while_interactive_pauses_for_space() -> None:
     next_state, effects = handle_engine_event(
-        state(mode="playing", interactive=True), StreamCrashed(1, "device gone")
+        state(mode="playing", interactive=True),
+        StreamCrashed(1, SimulatedDeviceError()),
     )
     assert next_state == state(mode="paused", had_errors=True)
     assert effects == (
-        Warn("! playback failed: device gone"),
+        Warn("! playback failed: simulated device error"),
         Note("device error - space: replay, n/p: skip, q: quit"),
     )
 
 
 def test_crash_noninteractive_skips_forward() -> None:
     next_state, effects = handle_engine_event(
-        state(index=1, mode="playing", interactive=False), StreamCrashed(1, "boom")
+        state(index=1, mode="playing", interactive=False),
+        StreamCrashed(1, SimulatedDeviceError()),
     )
     assert next_state == state(index=1, had_errors=True, interactive=False)
     assert effects == (
-        Warn("! playback failed: boom - continuing with next paragraph"),
+        Warn(
+            "! playback failed: simulated device error - continuing with next paragraph"
+        ),
         TryPlay(2),
     )
 
 
 def test_crash_while_paused_is_ignored() -> None:
     next_state, effects = handle_engine_event(
-        state(mode="paused"), StreamCrashed(0, "boom")
+        state(mode="paused"), StreamCrashed(0, SimulatedDeviceError())
     )
     assert next_state == state(mode="paused")
     assert effects == ()

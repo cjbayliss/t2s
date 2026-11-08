@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from t2s.monads import io_run
 from t2s.pure import CacheFile, cache_key, evictions, prefetch_window
 from t2s.synthesis import (
     SynthesisFailed,
@@ -42,15 +43,21 @@ def spawn_worker(
     ]
     cache = tmp_path / "cache"
     cache.mkdir(parents=True, exist_ok=True)
-    worker = make_worker(
-        paragraphs, cache_keys, cache, [sys.executable, str(FAKE_SAY)], ahead=ahead
+    worker = io_run(
+        make_worker(
+            paragraphs,
+            cache_keys,
+            cache,
+            [sys.executable, str(FAKE_SAY)],
+            ahead=ahead,
+        )
     )
-    start_worker(worker)
+    io_run(start_worker(worker))
     return worker, cache
 
 
 def rendered_path(worker: SynthesisWorker, index: int) -> Path:
-    rendered = ensure(worker, index)
+    rendered = io_run(ensure(worker, index))
     assert isinstance(rendered, Path)
     return rendered
 
@@ -101,19 +108,19 @@ def test_prefetch_window(tmp_path: Path) -> None:
     paragraphs = [f"paragraph number {index}" for index in range(8)]
     worker, _ = spawn_worker(tmp_path, paragraphs, ahead=2)
     try:
-        set_cursor(worker, 0)
+        io_run(set_cursor(worker, 0))
         assert rendered_path(worker, 0).exists()
         assert wait_until(
             lambda: all(path_for(worker, index).exists() for index in (1, 2))
         )
         assert not path_for(worker, 3).exists()
-        set_cursor(worker, 5)
+        io_run(set_cursor(worker, 5))
         assert wait_until(
             lambda: all(path_for(worker, index).exists() for index in (5, 6, 7))
         )
         assert not path_for(worker, 4).exists()
     finally:
-        stop_worker(worker)
+        io_run(stop_worker(worker))
 
 
 def test_failure_then_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -121,15 +128,15 @@ def test_failure_then_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     paragraphs = ["fine one", "jinxed paragraph", "fine two"]
     worker, _ = spawn_worker(tmp_path, paragraphs, ahead=3)
     try:
-        set_cursor(worker, 0)
+        io_run(set_cursor(worker, 0))
         assert rendered_path(worker, 0).exists()
-        failed = ensure(worker, 1)
+        failed = io_run(ensure(worker, 1))
         assert isinstance(failed, SynthesisFailed)
-        clear_failure(worker, 1)
+        io_run(clear_failure(worker, 1))
         monkeypatch.delenv("FAKE_SAY_FAIL_TEXT")
         assert rendered_path(worker, 1).exists()
     finally:
-        stop_worker(worker)
+        io_run(stop_worker(worker))
 
 
 def test_prune_evicts_oldest_and_removes_parts(tmp_path: Path) -> None:
@@ -144,7 +151,7 @@ def test_prune_evicts_oldest_and_removes_parts(tmp_path: Path) -> None:
     past = time.time() - 10_000
     os.utime(old, (past, past))
 
-    prune_cache(cache, limit_megabytes=200 / 1024 / 1024)
+    io_run(prune_cache(cache, limit_megabytes=200 / 1024 / 1024))
 
     assert not old.exists()
     assert new.exists()
@@ -155,5 +162,5 @@ def test_prune_zero_limit_keeps_everything(tmp_path: Path) -> None:
     cache = tmp_path / "c"
     cache.mkdir()
     (cache / "a.wav").write_bytes(b"x" * 5000)
-    prune_cache(cache, limit_megabytes=0)
+    io_run(prune_cache(cache, limit_megabytes=0))
     assert (cache / "a.wav").exists()

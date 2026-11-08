@@ -1,9 +1,30 @@
 import argparse
 import sys
+from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
 
-from t2s.app import arguments_from_namespace, config_from_arguments, open_app, run
+from t2s.app import (
+    App,
+    Arguments,
+    arguments_from_namespace,
+    config_from_arguments,
+    open_app,
+    run,
+)
+from t2s.effects import print_error
+from t2s.errors import StartupError
+from t2s.monads import (
+    IO,
+    Failure,
+    Result,
+    Success,
+    io,
+    io_bind,
+    io_map,
+    io_pure,
+    io_run,
+)
 from t2s.pure import split_paragraphs
 
 
@@ -114,37 +135,92 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = arguments_from_namespace(build_parser().parse_args(argv))
-
-    if arguments.file == "-":
-        if sys.stdin.isatty():
-            print(
-                "t2s: no input - pass a file path or pipe text (see t2s --help)",
-                file=sys.stderr,
-            )
-            return 2
-        text = sys.stdin.read()
-    else:
-        try:
-            text = Path(arguments.file).read_text(encoding="utf-8", errors="replace")
-        except OSError as exception:
-            print(f"t2s: cannot read {arguments.file}: {exception}", file=sys.stderr)
-            return 2
-
-    paragraphs = split_paragraphs(text, arguments.split_long)
-    if not paragraphs:
-        print("t2s: input contains no text", file=sys.stderr)
-        return 1
-    if not 1 <= arguments.start <= len(paragraphs):
-        print(
-            f"t2s: --start {arguments.start} is out of range "
-            f"(document has {len(paragraphs)} paragraphs)",
-            file=sys.stderr,
-        )
-        return 2
-
     try:
-        return run(open_app(config_from_arguments(arguments, paragraphs)))
+        return io_run(main_effect(arguments))
     except BrokenPipeError:
         return 0
     except KeyboardInterrupt:
         return 130
+
+
+def main_effect(arguments: Arguments) -> IO[int]:
+    return io_bind(read_document(arguments), play_document(arguments))
+
+
+def read_document(arguments: Arguments) -> IO[Result[str, StartupError]]:
+    def read() -> Result[str, StartupError]:
+        if arguments.file == "-":
+            return read_standard_input()
+        try:
+            return Success(
+                Path(arguments.file).read_text(encoding="utf-8", errors="replace")
+            )
+        except OSError as exception:
+            return unreadable_document(arguments.file, exception)
+
+    return io(read)
+
+
+def read_standard_input() -> Result[str, StartupError]:
+    if sys.stdin.isatty():
+        return Failure(
+            StartupError(
+                message=(
+                    "t2s: no input - pass a file path or pipe text (see t2s --help)"
+                ),
+                exit_code=2,
+            )
+        )
+    return Success(sys.stdin.read())
+
+
+def unreadable_document(name: str, exception: OSError) -> Failure[StartupError]:
+    return Failure(
+        StartupError(message=f"t2s: cannot read {name}: {exception}", exit_code=2)
+    )
+
+
+def play_document(
+    arguments: Arguments,
+) -> Callable[[Result[str, StartupError]], IO[int]]:
+    def continue_with(document: Result[str, StartupError]) -> IO[int]:
+        match document:
+            case Failure(error):
+                return report_startup_error(error)
+            case Success(text):
+                return io_bind(prepare_app(arguments, text), launch_prepared)
+
+    return continue_with
+
+
+def prepare_app(arguments: Arguments, text: str) -> IO[Result[App, StartupError]]:
+    paragraphs = split_paragraphs(text, arguments.split_long)
+    if not paragraphs:
+        return io_pure(
+            Failure(StartupError(message="t2s: input contains no text", exit_code=1))
+        )
+    if not 1 <= arguments.start <= len(paragraphs):
+        return io_pure(
+            Failure(
+                StartupError(
+                    message=(
+                        f"t2s: --start {arguments.start} is out of range "
+                        f"(document has {len(paragraphs)} paragraphs)"
+                    ),
+                    exit_code=2,
+                )
+            )
+        )
+    return open_app(config_from_arguments(arguments, paragraphs))
+
+
+def launch_prepared(started: Result[App, StartupError]) -> IO[int]:
+    match started:
+        case Failure(error):
+            return report_startup_error(error)
+        case Success(app):
+            return run(app)
+
+
+def report_startup_error(error: StartupError) -> IO[int]:
+    return io_map(print_error(error.message), lambda _: error.exit_code)

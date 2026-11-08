@@ -2,10 +2,21 @@ import hashlib
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from functools import reduce
 from itertools import accumulate, chain
 from operator import attrgetter
 from pathlib import Path
 from typing import Literal, final
+
+from t2s.errors import (
+    AudioLoadError,
+    PlaybackError,
+    PlayerExitError,
+    SaySynthesisError,
+    SimulatedDeviceError,
+    SynthesisError,
+    SynthesisShutdown,
+)
 
 
 def nominal_output_rate(reported_rate: int) -> int:
@@ -35,21 +46,18 @@ def split_sentences(text: str) -> tuple[str, ...]:
 def pack_sentences(
     sentences: Sequence[str], maximum_characters: int
 ) -> tuple[str, ...]:
+    def extend(packed: tuple[str, ...], sentence: str) -> tuple[str, ...]:
+        match packed:
+            case ():
+                return (sentence,)
+            case (*previous, current) if (
+                len(current) + 1 + len(sentence) <= maximum_characters
+            ):
+                return (*previous, f"{current} {sentence}")
+            case _:
+                return (*packed, sentence)
 
-    def groups() -> Iterator[str]:
-        current = ""
-        for sentence in sentences:
-            if not current:
-                current = sentence
-            elif len(current) + 1 + len(sentence) > maximum_characters:
-                yield current
-                current = sentence
-            else:
-                current = f"{current} {sentence}"
-        if current:
-            yield current
-
-    return tuple(groups())
+    return reduce(extend, sentences, ())
 
 
 def split_long_paragraph(text: str, maximum_characters: int) -> tuple[str, ...]:
@@ -61,8 +69,10 @@ def split_long_paragraph(text: str, maximum_characters: int) -> tuple[str, ...]:
 def split_paragraphs(
     text: str, maximum_characters: int | None = None
 ) -> tuple[str, ...]:
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    normalized = (normalize(paragraph) for paragraph in re.split(r"\n[ \t]*\n+", text))
+    unified = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = (
+        normalize(paragraph) for paragraph in re.split(r"\n[ \t]*\n+", unified)
+    )
     expanded = (
         split_long_paragraph(paragraph, maximum_characters)
         if maximum_characters
@@ -255,7 +265,7 @@ class StreamChained:
 @dataclass(frozen=True, slots=True)
 class StreamCrashed:
     index: int
-    detail: str
+    error: PlaybackError
 
 
 type EngineEvent = StreamStarted | StreamFinished | StreamChained | StreamCrashed
@@ -303,7 +313,7 @@ def stream_next_chunk(
             start_count = state.start_count + 1
             state = replace(state, start_count=start_count)
             if fail_at and start_count == fail_at:
-                events += (StreamCrashed(index, "simulated device error"),)
+                events += (StreamCrashed(index, SimulatedDeviceError()),)
                 state = replace(
                     state,
                     current_index=None,
@@ -417,10 +427,10 @@ def handle_engine_event(
     state: AppState, event: EngineEvent
 ) -> tuple[AppState, Effects]:
     match event:
-        case StreamCrashed(index, detail):
+        case StreamCrashed(index, error):
             if state.mode != "playing":
                 return state, ()
-            message = f"! playback failed: {detail}"
+            message = f"! playback failed: {playback_failure_message(error)}"
             if state.interactive:
                 return replace(state, mode="paused", had_errors=True), (
                     Warn(message),
@@ -487,6 +497,30 @@ def done_message(count: int, had_errors: bool) -> str:
     if had_errors:
         return "done (with errors)"
     return f"done - {count} paragraph{'s' if count != 1 else ''}"
+
+
+def collapsed_detail(text: str) -> str:
+    return " ".join(text.split())[:200]
+
+
+def playback_failure_message(error: PlaybackError) -> str:
+    match error:
+        case AudioLoadError(file_name, exception_type, detail):
+            rendered = collapsed_detail(f"{exception_type}: {detail}")
+            return f"could not load {file_name}: {rendered}"
+        case PlayerExitError(exit_code, standard_error):
+            tail = collapsed_detail(standard_error)
+            return f"player exited with code {exit_code}: {tail}"
+        case SimulatedDeviceError():
+            return "simulated device error"
+
+
+def synthesis_failure_message(error: SynthesisError) -> str:
+    match error:
+        case SaySynthesisError(standard_error=standard_error):
+            return collapsed_detail(standard_error)
+        case SynthesisShutdown():
+            return "shutting down"
 
 
 def prefetch_window(cursor: int, ahead: int, count: int) -> tuple[int, ...]:
