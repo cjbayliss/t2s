@@ -1,6 +1,8 @@
 import os
 import subprocess
 import sys
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import final
@@ -11,6 +13,17 @@ REPO = Path(__file__).resolve().parent.parent
 os.environ.setdefault("COVERAGE_PROCESS_START", str(REPO / "pyproject.toml"))
 FAKE_SAY_SRC = Path(__file__).resolve().parent / "fake_say.py"
 FAKE_PLAY_SRC = Path(__file__).resolve().parent / "fake_play.py"
+
+
+def wait_until(
+    predicate: Callable[[], bool], timeout: float = 10.0, step: float = 0.02
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(step)
+    return predicate()
 
 
 @final
@@ -81,7 +94,7 @@ def run_t2s(
 ) -> subprocess.CompletedProcess[str]:
     command = [sys.executable, "-m", "t2s"]
     if fakes is not None:
-        command += ["--say-bin", fakes.say_binary, "--play-bin", fakes.play_binary]
+        command += ["--backend-bin", fakes.say_binary, "--play-bin", fakes.play_binary]
     command += arguments
     environment = os.environ.copy()
     if environment_extra:

@@ -4,26 +4,14 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import REPO, Fakes, engine_log_environment, texts_played
+from conftest import REPO, Fakes, engine_log_environment, texts_played, wait_until
 
 pytestmark = pytest.mark.skipif(
     not hasattr(pty, "openpty"), reason="requires pty support"
 )
-
-
-def wait_until(
-    pred: Callable[[], bool], timeout: float = 8.0, step: float = 0.05
-) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if pred():
-            return True
-        time.sleep(step)
-    return pred()
 
 
 def spawn(
@@ -43,7 +31,7 @@ def spawn(
                 sys.executable,
                 "-m",
                 "t2s",
-                "--say-bin",
+                "--backend-bin",
                 fakes.say_binary,
                 "--player",
                 "test",
@@ -110,9 +98,10 @@ def test_space_pauses_replays_and_q_quits(fakes: Fakes, tmp_path: Path) -> None:
 
         os.write(master, b" ")
         assert wait_until(lambda: b"paused" in buffer), bytes(buffer)
-        time.sleep(0.7)
-        lines = play_log.read_text().splitlines()
-        assert len(lines) == 1
+        pause_holds_until = time.monotonic() + 1.5
+        while time.monotonic() < pause_holds_until:
+            assert len(play_log.read_text().splitlines()) == 1
+            time.sleep(0.05)
 
         os.write(master, b" ")
         assert wait_until(lambda: len(play_log.read_text().splitlines()) == 2), (
@@ -156,8 +145,6 @@ def test_chained_advance_without_keys(fakes: Fakes, tmp_path: Path) -> None:
             "First paragraph words.",
             "Second paragraph words.",
         ]
-    except OSError:
-        pass
     finally:
         cleanup(process, master, output_read_file_descriptor, reader)
 

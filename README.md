@@ -52,7 +52,7 @@ More examples:
 
 ```sh
 # Specific voice and speech rate
-t2s --voice Daniel --rate 190 thesis.txt
+t2s -O voice=Daniel -O rate=190 thesis.txt
 
 # Start from a later paragraph
 t2s --start 4 long-article.txt
@@ -69,8 +69,10 @@ known position.
 ### Options
 
 - `file` - text file to read; `-` or omitted reads standard input
-- `-v, --voice VOICE` - voice name passed to `say`
-- `-r, --rate WPM` - speech rate in words per minute
+- `-B, --backend NAME` - synthesis backend (default: `say`)
+- `-O, --option KEY=VALUE` - option passed to the backend, repeatable;
+  a single-letter key becomes a short flag (`-O r=350` -> `-r 350`),
+  anything longer a long flag (`-O rate=350` -> `--rate 350`)
 - `--width COLS` - display wrap width (default: 72)
 - `--start N` - 1-based paragraph number to start from (default: 1)
 - `--split-long CHARS` - also split paragraphs longer than `CHARS` at
@@ -81,14 +83,12 @@ known position.
   `~/Library/Caches/t2s`)
 - `--cache-limit-mb MB` - prune the cache when larger than this
   (default: 256; `0` means unlimited)
-- `--say-bin PATH` - `say` binary to run (default: `say`, or
-  `$T2S_SAY_BIN`)
+- `--backend-bin PATH` - backend binary to run (default: the backend's
+  own binary, or `$T2S_BACKEND_BIN`)
 - `--play-bin PATH` - audio player binary (default: `afplay`, or
   `$T2S_PLAY_BIN`)
 - `--gap MS` - silence between paragraphs in milliseconds (default: 0;
   miniaudio engine only)
-- `--data-format FMT` - synthesis format for `say`, e.g. `LEI16@48000`
-  (default: `LEI16` at the output device's native rate)
 - `--player ENGINE` - `miniaudio` (gapless in-process streaming),
   `afplay` (external process fallback), `test` (headless, used by t2s's
   own tests), or `auto` (default: miniaudio, falling back to afplay)
@@ -96,8 +96,8 @@ known position.
 
 ### Environment variables
 
-- `T2S_SAY_BIN` - fallback `say` binary path when `--say-bin` is not
-  given
+- `T2S_BACKEND_BIN` - fallback backend binary path when `--backend-bin`
+  is not given
 - `T2S_PLAY_BIN` - fallback player binary path when `--play-bin` is not
   given
 - `T2S_TEST_PLAY_FAIL_AT`, `T2S_TEST_PLAY_DELAY`, `T2S_TEST_PLAY_LOG` -

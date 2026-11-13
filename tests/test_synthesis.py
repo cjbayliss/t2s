@@ -1,13 +1,13 @@
 import os
 import sys
 import time
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from conftest import wait_until
 
 from t2s.monads import io_run
-from t2s.pure import CacheFile, cache_key, evictions, prefetch_window
+from t2s.pure import cache_key, prefetch_window
 from t2s.synthesis import (
     SynthesisFailed,
     SynthesisWorker,
@@ -24,23 +24,10 @@ from t2s.synthesis import (
 FAKE_SAY = Path(__file__).resolve().parent / "fake_say.py"
 
 
-def wait_until(
-    pred: Callable[[], bool], timeout: float = 10.0, step: float = 0.02
-) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if pred():
-            return True
-        time.sleep(step)
-    return pred()
-
-
 def spawn_worker(
     tmp_path: Path, paragraphs: list[str], ahead: int = 3
 ) -> tuple[SynthesisWorker, Path]:
-    cache_keys = [
-        cache_key(paragraph, None, None, "LEI16@22050") for paragraph in paragraphs
-    ]
+    cache_keys = [cache_key(paragraph, (), "LEI16@22050") for paragraph in paragraphs]
     cache = tmp_path / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     worker = io_run(
@@ -62,49 +49,17 @@ def rendered_path(worker: SynthesisWorker, index: int) -> Path:
     return rendered
 
 
-def test_cache_key_fields() -> None:
-    base = cache_key("hello world", None, None, "LEI16@22050")
-    assert cache_key("hello world", None, None, "LEI16@22050") == base
-    assert cache_key("hello world", "Fred", None, "LEI16@22050") != base
-    assert cache_key("hello world", None, 180, "LEI16@22050") != base
-    assert cache_key("hello  world", None, None, "LEI16@22050") != base
-
-
-def test_cache_key_depends_on_data_format() -> None:
-    a = cache_key("hi", None, None, "LEI16@22050")
-    b = cache_key("hi", None, None, "LEI16@48000")
-    assert a != b
-
-
-def test_evictions_oldest_first() -> None:
-    old = CacheFile(Path("old.wav"), 300, mtime=1.0)
-    new = CacheFile(Path("new.wav"), 100, mtime=2.0)
-    assert evictions([old, new], limit_bytes=200) == (Path("old.wav"),)
-    assert evictions([old, new], limit_bytes=400) == ()
-    assert evictions([old, new], limit_bytes=50) == (Path("old.wav"), Path("new.wav"))
-    assert evictions([], limit_bytes=100) == ()
-
-
-def test_evictions_ignores_input_order() -> None:
-    a = CacheFile(Path("a.wav"), 100, mtime=3.0)
-    b = CacheFile(Path("b.wav"), 100, mtime=1.0)
-    assert evictions([a, b], limit_bytes=150) == (Path("b.wav"),)
-
-
-def test_prefetch_window_is_cursor_to_cursor_plus_ahead() -> None:
+def test_prefetch_window_spans_cursor_through_cursor_plus_ahead() -> None:
     assert prefetch_window(0, 2, 8) == (0, 1, 2)
     assert prefetch_window(5, 2, 8) == (5, 6, 7)
     assert prefetch_window(7, 2, 8) == (7,)
     assert prefetch_window(6, 2, 8) == (6, 7)
-
-
-def test_prefetch_window_edges() -> None:
     assert prefetch_window(0, 0, 3) == (0,)
     assert prefetch_window(0, 3, 0) == ()
     assert prefetch_window(0, -1, 3) == ()
 
 
-def test_prefetch_window(tmp_path: Path) -> None:
+def test_worker_prefetches_only_the_window(tmp_path: Path) -> None:
     paragraphs = [f"paragraph number {index}" for index in range(8)]
     worker, _ = spawn_worker(tmp_path, paragraphs, ahead=2)
     try:

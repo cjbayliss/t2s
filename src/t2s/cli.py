@@ -8,7 +8,6 @@ from t2s.app import (
     App,
     Arguments,
     arguments_from_namespace,
-    config_from_arguments,
     open_app,
     run,
 )
@@ -31,8 +30,8 @@ from t2s.pure import split_paragraphs
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="t2s",
-        description="Read a document aloud with macOS say(1), paragraph by "
-        "paragraph (space: pause/replay, n/p: skip, q: quit). "
+        description="Read a document aloud with a text-to-speech backend, "
+        "paragraph by paragraph (space: pause/replay, n/p: skip, q: quit). "
         "Paragraphs are synthesized ahead to a cache and played "
         "gaplessly in-process.",
     )
@@ -42,9 +41,23 @@ def build_parser() -> argparse.ArgumentParser:
         default="-",
         help="text file to read ('-' or omitted: standard input)",
     )
-    parser.add_argument("-v", "--voice", help="voice name passed to say")
     parser.add_argument(
-        "-r", "--rate", type=int, metavar="WPM", help="speech rate in words per minute"
+        "-B",
+        "--backend",
+        default="say",
+        choices=["say"],
+        help="synthesis backend (default: say)",
+    )
+    parser.add_argument(
+        "-O",
+        "--option",
+        dest="backend_options",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help="option passed to the backend, repeatable; a single-letter "
+        "key becomes a short flag (-O r=350 -> -r 350), anything longer "
+        "a long flag (-O rate=350 -> --rate=350)",
     )
     parser.add_argument(
         "--width",
@@ -91,12 +104,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="prune the cache when larger than this (default: 256; 0 = unlimited)",
     )
     parser.add_argument(
-        "--say-bin",
-        dest="say_binary",
+        "--backend-bin",
+        dest="backend_binary",
         default=None,
         metavar="PATH",
-        help="say binary to run (default: say, or $T2S_SAY_BIN); "
-        "useful for testing with a fake",
+        help="backend binary to run (default: the backend's own binary, "
+        "or $T2S_BACKEND_BIN); useful for testing with a fake",
     )
     parser.add_argument(
         "--play-bin",
@@ -112,13 +125,6 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="MS",
         help="silence between paragraphs in milliseconds (default: 0; "
         "miniaudio engine only)",
-    )
-    parser.add_argument(
-        "--data-format",
-        default=None,
-        metavar="FMT",
-        help="synthesis format for say, e.g. LEI16@48000 "
-        "(default: LEI16 at the output device's native rate)",
     )
     parser.add_argument(
         "--player",
@@ -211,7 +217,7 @@ def prepare_app(arguments: Arguments, text: str) -> IO[Result[App, StartupError]
                 )
             )
         )
-    return open_app(config_from_arguments(arguments, paragraphs))
+    return open_app(arguments, paragraphs)
 
 
 def launch_prepared(started: Result[App, StartupError]) -> IO[int]:

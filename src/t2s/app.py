@@ -55,16 +55,16 @@ from t2s.pure import (
     TryPlay,
     Warn,
     apply_play_outcome,
-    build_say_command,
     cache_key,
     decode_chunk,
     engine_choice,
     gap_supported,
     handle_engine_event,
     handle_key,
+    resolve_backend_binary,
     resolve_cache_directory,
     resolve_play_binary,
-    resolve_say_binary,
+    say_command,
     synthesis_failure_message,
     wrap_offsets,
 )
@@ -86,73 +86,35 @@ from t2s.synthesis import (
 @dataclass(frozen=True, slots=True)
 class Arguments:
     file: str
-    voice: str | None
-    rate: int | None
+    backend: str
+    backend_options: tuple[str, ...]
+    backend_binary: str | None
     width: int
     start: int
     split_long: int | None
     ahead: int
     cache_directory: str | None
     cache_limit_megabytes: float
-    say_binary: str | None
     play_binary: str | None
     gap_milliseconds: int
-    data_format: str | None
     player: str
 
 
 def arguments_from_namespace(namespace_arguments: argparse.Namespace) -> Arguments:
     return Arguments(
         file=namespace_arguments.file,
-        voice=namespace_arguments.voice,
-        rate=namespace_arguments.rate,
+        backend=namespace_arguments.backend,
+        backend_options=tuple(namespace_arguments.backend_options or ()),
+        backend_binary=namespace_arguments.backend_binary,
         width=namespace_arguments.width,
         start=namespace_arguments.start,
         split_long=namespace_arguments.split_long,
         ahead=namespace_arguments.ahead,
         cache_directory=namespace_arguments.cache_directory,
         cache_limit_megabytes=namespace_arguments.cache_limit_megabytes,
-        say_binary=namespace_arguments.say_binary,
         play_binary=namespace_arguments.play_binary,
         gap_milliseconds=namespace_arguments.gap,
-        data_format=namespace_arguments.data_format,
         player=namespace_arguments.player,
-    )
-
-
-@final
-@dataclass(frozen=True, slots=True)
-class Config:
-    paragraphs: tuple[str, ...]
-    start_index: int
-    width: int
-    voice: str | None
-    rate: int | None
-    say_binary: str | None
-    play_binary: str | None
-    cache_directory: str | None
-    cache_limit_megabytes: float
-    ahead: int
-    player: str
-    gap_milliseconds: int
-    data_format: str | None
-
-
-def config_from_arguments(arguments: Arguments, paragraphs: tuple[str, ...]) -> Config:
-    return Config(
-        paragraphs=paragraphs,
-        start_index=arguments.start - 1,
-        width=arguments.width,
-        voice=arguments.voice,
-        rate=arguments.rate,
-        say_binary=arguments.say_binary,
-        play_binary=arguments.play_binary,
-        cache_directory=arguments.cache_directory,
-        cache_limit_megabytes=arguments.cache_limit_megabytes,
-        ahead=arguments.ahead,
-        player=arguments.player,
-        gap_milliseconds=arguments.gap_milliseconds,
-        data_format=arguments.data_format,
     )
 
 
@@ -212,50 +174,50 @@ def engine_warnings(choice: EngineChoice, gap_milliseconds: int) -> tuple[str, .
 
 
 def build_app(
-    config: Config, audio: AudioLibrary | None
+    arguments: Arguments, paragraphs: tuple[str, ...], audio: AudioLibrary | None
 ) -> IO[Result[App, StartupError]]:
     def built() -> Result[App, StartupError]:
         environment = os.environ
-        say_binary = resolve_say_binary(config.say_binary, environment)
-        data_format = (
-            io_run(default_data_format())
-            if config.data_format is None
-            else config.data_format
+        backend_binary = resolve_backend_binary(
+            arguments.backend, arguments.backend_binary, environment
         )
-        say_command = build_say_command(
-            say_binary, config.voice, config.rate, data_format
+        data_format = io_run(default_data_format())
+        synthesis_command = say_command(
+            backend_binary, arguments.backend_options, data_format
         )
         cache_keys = tuple(
-            cache_key(paragraph, config.voice, config.rate, data_format)
-            for paragraph in config.paragraphs
+            cache_key(paragraph, arguments.backend_options, data_format)
+            for paragraph in paragraphs
         )
-        cache_directory = resolve_cache_directory(config.cache_directory, Path.home())
+        cache_directory = resolve_cache_directory(
+            arguments.cache_directory, Path.home()
+        )
         cache_directory.mkdir(parents=True, exist_ok=True)
-        io_run(prune_cache(cache_directory, config.cache_limit_megabytes))
+        io_run(prune_cache(cache_directory, arguments.cache_limit_megabytes))
         synthesis_worker = io_run(
             make_worker(
-                config.paragraphs,
+                paragraphs,
                 cache_keys,
                 cache_directory,
-                say_command,
-                ahead=config.ahead,
+                synthesis_command,
+                ahead=arguments.ahead,
             )
         )
-        play_command = (resolve_play_binary(config.play_binary, environment),)
+        play_command = (resolve_play_binary(arguments.play_binary, environment),)
         engine = io_run(
             make_engine(
-                config.player,
+                arguments.player,
                 play_command,
-                config.gap_milliseconds,
+                arguments.gap_milliseconds,
                 environment,
                 audio=audio,
             )
         )
         return Success(
             App(
-                paragraphs=config.paragraphs,
-                start_index=config.start_index,
-                width=config.width,
+                paragraphs=paragraphs,
+                start_index=arguments.start - 1,
+                width=arguments.width,
                 use_ansi=sys.stdout.isatty(),
                 key_source=io_run(open_key_source()),
                 synthesis_worker=synthesis_worker,
@@ -266,15 +228,17 @@ def build_app(
     return io(built)
 
 
-def open_app(config: Config) -> IO[Result[App, StartupError]]:
-    return io_bind(load_audio_library(), choose_app(config))
+def open_app(
+    arguments: Arguments, paragraphs: tuple[str, ...]
+) -> IO[Result[App, StartupError]]:
+    return io_bind(load_audio_library(), choose_app(arguments, paragraphs))
 
 
 def choose_app(
-    config: Config,
+    arguments: Arguments, paragraphs: tuple[str, ...]
 ) -> Callable[[AudioLibrary | None], IO[Result[App, StartupError]]]:
     def continue_with(audio: AudioLibrary | None) -> IO[Result[App, StartupError]]:
-        choice = engine_choice(config.player, audio is not None)
+        choice = engine_choice(arguments.player, audio is not None)
         if choice == "missing-miniaudio":
             error = StartupError(
                 message=(
@@ -289,10 +253,10 @@ def choose_app(
             lambda pending_effect, warning: io_bind(
                 pending_effect, lambda _: print_error(warning)
             ),
-            engine_warnings(choice, config.gap_milliseconds),
+            engine_warnings(choice, arguments.gap_milliseconds),
             warned,
         )
-        return io_bind(warned, lambda _: build_app(config, audio))
+        return io_bind(warned, lambda _: build_app(arguments, paragraphs, audio))
 
     return continue_with
 

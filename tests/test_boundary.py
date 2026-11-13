@@ -1,114 +1,93 @@
-import argparse
 from pathlib import Path
 
-from t2s.app import arguments_from_namespace
+from t2s.app import Arguments, arguments_from_namespace
+from t2s.cli import build_parser
 from t2s.pure import (
-    build_say_command,
     engine_choice,
     gap_supported,
+    resolve_backend_binary,
     resolve_cache_directory,
     resolve_play_binary,
-    resolve_say_binary,
+    say_command,
 )
 
 
-def namespace(**overrides: object) -> argparse.Namespace:
-    values: dict[str, object] = {
-        "file": "-",
-        "voice": None,
-        "rate": None,
-        "width": 72,
-        "start": 1,
-        "split_long": None,
-        "ahead": 3,
-        "cache_directory": None,
-        "cache_limit_megabytes": 256.0,
-        "say_binary": None,
-        "play_binary": None,
-        "gap": 0,
-        "data_format": None,
-        "player": "auto",
-    }
-    values.update(overrides)
-    return argparse.Namespace(**values)
-
-
-def test_arguments_from_namespace_reads_every_field() -> None:
-    namespace_arguments = namespace(
+def test_arguments_from_namespace_maps_defaults_and_overrides() -> None:
+    defaults = arguments_from_namespace(build_parser().parse_args([]))
+    assert defaults == Arguments(
+        file="-",
+        backend="say",
+        backend_options=(),
+        backend_binary=None,
+        width=72,
+        start=1,
+        split_long=None,
+        ahead=3,
+        cache_directory=None,
+        cache_limit_megabytes=256.0,
+        play_binary=None,
+        gap_milliseconds=0,
+        player="auto",
+    )
+    overrides = arguments_from_namespace(
+        build_parser().parse_args(
+            [
+                "book.txt",
+                "-O",
+                "voice=Fred",
+                "-O",
+                "r=190",
+                "--backend-bin",
+                "/bin/say",
+                "--width",
+                "40",
+                "--start",
+                "7",
+                "--split-long",
+                "1200",
+                "--ahead",
+                "5",
+                "--cache-dir",
+                "/tmp/c",
+                "--cache-limit-mb",
+                "10.5",
+                "--play-bin",
+                "/bin/afplay",
+                "--gap",
+                "150",
+                "--player",
+                "afplay",
+            ]
+        )
+    )
+    assert overrides == Arguments(
         file="book.txt",
-        voice="Fred",
-        rate=190,
+        backend="say",
+        backend_options=("voice=Fred", "r=190"),
+        backend_binary="/bin/say",
         width=40,
         start=7,
         split_long=1200,
         ahead=5,
         cache_directory="/tmp/c",
         cache_limit_megabytes=10.5,
-        say_binary="/bin/say",
         play_binary="/bin/afplay",
-        gap=150,
-        data_format="LEI16@44100",
+        gap_milliseconds=150,
         player="afplay",
     )
-    arguments = arguments_from_namespace(namespace_arguments)
+
+
+def test_resolve_backend_binary_precedence() -> None:
     assert (
-        arguments.file,
-        arguments.voice,
-        arguments.rate,
-        arguments.width,
-        arguments.start,
-        arguments.split_long,
-        arguments.ahead,
-        arguments.cache_directory,
-        arguments.cache_limit_megabytes,
-        arguments.say_binary,
-        arguments.play_binary,
-        arguments.gap_milliseconds,
-        arguments.data_format,
-        arguments.player,
-    ) == (
-        "book.txt",
-        "Fred",
-        190,
-        40,
-        7,
-        1200,
-        5,
-        "/tmp/c",
-        10.5,
-        "/bin/say",
-        "/bin/afplay",
-        150,
-        "LEI16@44100",
-        "afplay",
+        resolve_backend_binary("say", "/explicit", {"T2S_BACKEND_BIN": "/environment"})
+        == "/explicit"
     )
-
-
-def test_arguments_defaults_survive_the_namespace_roundtrip() -> None:
-    arguments = arguments_from_namespace(namespace())
-    assert arguments.file == "-"
-    assert arguments.voice is None
-    assert arguments.rate is None
-    assert arguments.width == 72
-    assert arguments.start == 1
-    assert arguments.split_long is None
-    assert arguments.ahead == 3
-    assert arguments.cache_directory is None
-    assert arguments.cache_limit_megabytes == 256.0
-    assert arguments.say_binary is None
-    assert arguments.play_binary is None
-    assert arguments.gap_milliseconds == 0
-    assert arguments.data_format is None
-    assert arguments.player == "auto"
-
-
-def test_resolve_say_binary_precedence() -> None:
     assert (
-        resolve_say_binary("/explicit", {"T2S_SAY_BIN": "/environment"}) == "/explicit"
+        resolve_backend_binary("say", None, {"T2S_BACKEND_BIN": "/environment"})
+        == "/environment"
     )
-    assert resolve_say_binary(None, {"T2S_SAY_BIN": "/environment"}) == "/environment"
-    assert resolve_say_binary(None, {}) == "say"
-    assert resolve_say_binary(None, {"OTHER": "x"}) == "say"
+    assert resolve_backend_binary("say", None, {}) == "say"
+    assert resolve_backend_binary("espeak", None, {}) == "espeak"
 
 
 def test_resolve_play_binary_precedence() -> None:
@@ -145,20 +124,23 @@ def test_gap_support_follows_engine_choice() -> None:
     assert not gap_supported("missing-miniaudio")
 
 
-def test_build_say_command_includes_only_given_options() -> None:
-    assert build_say_command("say", None, None, "LEI16@48000") == (
+def test_say_command_translates_options_and_appends_wave_output() -> None:
+    assert say_command("say", (), "LEI16@48000") == (
         "say",
         "--file-format",
         "WAVE",
         "--data-format",
         "LEI16@48000",
     )
-    assert build_say_command("/bin/say", "Fred", 190, "LEI16@22050") == (
+    assert say_command(
+        "/bin/say", ("voice=Fred", "r=44", "verbose"), "LEI16@22050"
+    ) == (
         "/bin/say",
-        "-v",
+        "--voice",
         "Fred",
         "-r",
-        "190",
+        "44",
+        "--verbose",
         "--file-format",
         "WAVE",
         "--data-format",

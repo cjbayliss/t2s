@@ -59,7 +59,7 @@ class SynthesisWorker:
     paragraphs: tuple[str, ...]
     keys: tuple[str, ...]
     cache_directory: Path
-    say_command: tuple[str, ...]
+    synthesis_command: tuple[str, ...]
     ahead: int
     state: Reference[WorkerState]
 
@@ -68,7 +68,7 @@ def make_worker(
     paragraphs: Sequence[str],
     keys: Sequence[str],
     cache_directory: Path,
-    say_command: Sequence[str],
+    synthesis_command: Sequence[str],
     ahead: int = 3,
 ) -> IO[SynthesisWorker]:
     return io_bind(
@@ -78,7 +78,7 @@ def make_worker(
                 paragraphs=tuple(paragraphs),
                 keys=tuple(keys),
                 cache_directory=cache_directory,
-                say_command=tuple(say_command),
+                synthesis_command=tuple(synthesis_command),
                 ahead=max(0, ahead),
                 state=state,
             )
@@ -178,7 +178,7 @@ def render(worker: SynthesisWorker, index: int) -> IO[None]:
         path = path_for(worker, index)
         partial_file_path = path.with_name(path.name + ".part")
         process = subprocess.Popen(
-            (*worker.say_command, "-o", str(partial_file_path)),
+            (*worker.synthesis_command, "-o", str(partial_file_path)),
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,

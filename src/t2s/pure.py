@@ -143,8 +143,8 @@ def decode_chunk(pending: bytes, data: bytes) -> tuple[str, bytes]:
     return head.decode("utf-8", "ignore"), hold
 
 
-def cache_key(text: str, voice: str | None, rate: int | None, data_format: str) -> str:
-    material = f"{voice or ''}|{rate or ''}|{data_format}|{text}"
+def cache_key(text: str, options: Sequence[str], data_format: str) -> str:
+    material = "\x1f".join((*options, data_format, text))
     return hashlib.sha1(material.encode("utf-8")).hexdigest()
 
 
@@ -481,16 +481,23 @@ def advance(state: AppState, *, after_error: bool = False) -> tuple[AppState, Ef
     )
 
 
-def build_say_command(
-    say_binary: str, voice: str | None, rate: int | None, data_format: str
+def backend_option_arguments(option: str) -> tuple[str, ...]:
+    key, separator, value = option.partition("=")
+    flag = f"-{key}" if len(key) == 1 else f"--{key}"
+    return (flag, value) if separator else (flag,)
+
+
+def say_command(
+    backend_binary: str, options: Sequence[str], data_format: str
 ) -> tuple[str, ...]:
-    options = (
-        ("-v", voice) if voice else (),
-        ("-r", str(rate)) if rate else (),
-        ("--file-format", "WAVE"),
-        ("--data-format", data_format),
+    return (
+        backend_binary,
+        *chain.from_iterable(backend_option_arguments(option) for option in options),
+        "--file-format",
+        "WAVE",
+        "--data-format",
+        data_format,
     )
-    return (say_binary, *chain.from_iterable(options))
 
 
 def done_message(count: int, had_errors: bool) -> str:
@@ -550,8 +557,10 @@ def gap_supported(choice: EngineChoice) -> bool:
     return choice in ("miniaudio", "test")
 
 
-def resolve_say_binary(explicit: str | None, environment: Mapping[str, str]) -> str:
-    return explicit or environment.get("T2S_SAY_BIN") or "say"
+def resolve_backend_binary(
+    backend: str, explicit: str | None, environment: Mapping[str, str]
+) -> str:
+    return explicit or environment.get("T2S_BACKEND_BIN") or backend
 
 
 def resolve_play_binary(explicit: str | None, environment: Mapping[str, str]) -> str:
