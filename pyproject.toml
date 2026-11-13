@@ -6,6 +6,9 @@ requires-python = ">=3.15"
 version = "0.8.0"
 dependencies = ["miniaudio>=1.61"]
 
+[project.optional-dependencies]
+phonon = ["ptts>=0.7"]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
@@ -14,6 +17,7 @@ dev = [
     "mypy>=1.15",
     "hypothesis>=6",
     "pyright>=1.1.414",
+    "ptts>=0.7",
 ]
 
 [project.scripts]

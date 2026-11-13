@@ -40,11 +40,17 @@ class SaySynthesisError:
 
 @final
 @dataclass(frozen=True, slots=True)
+class PhononSynthesisError(Exception):
+    detail: str
+
+
+@final
+@dataclass(frozen=True, slots=True)
 class SynthesisShutdown:
     pass
 
 
-type SynthesisError = SaySynthesisError | SynthesisShutdown
+type SynthesisError = SaySynthesisError | PhononSynthesisError | SynthesisShutdown
 
 
 @final

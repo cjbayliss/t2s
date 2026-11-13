@@ -6,7 +6,7 @@ import select
 import sys
 import termios
 import tty
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import reduce
 from pathlib import Path
@@ -41,6 +41,7 @@ from t2s.monads import (
     read_reference,
     write_reference,
 )
+from t2s.phonon import make_phonon_plan, parse_phonon_settings
 from t2s.pure import (
     AppState,
     ClearFailure,
@@ -69,7 +70,9 @@ from t2s.pure import (
     wrap_offsets,
 )
 from t2s.synthesis import (
+    SayPlan,
     SynthesisFailed,
+    SynthesisPlan,
     SynthesisWorker,
     clear_failure,
     ensure,
@@ -173,21 +176,62 @@ def engine_warnings(choice: EngineChoice, gap_milliseconds: int) -> tuple[str, .
     return (*fallback, *gap)
 
 
+def synthesis_startup(
+    arguments: Arguments, environment: Mapping[str, str]
+) -> Result[tuple[SynthesisPlan, tuple[str, ...]], StartupError]:
+    match arguments.backend:
+        case "say":
+            backend_binary = resolve_backend_binary(
+                arguments.backend, arguments.backend_binary, environment
+            )
+            data_format = io_run(default_data_format())
+            plan = SayPlan(
+                command=say_command(
+                    backend_binary, arguments.backend_options, data_format
+                )
+            )
+            return Success((plan, (*arguments.backend_options, data_format)))
+        case "phonon":
+            if arguments.backend_binary is not None:
+                return Failure(
+                    StartupError(
+                        message=(
+                            "t2s: --backend-bin does not apply to the phonon backend"
+                        ),
+                        exit_code=2,
+                    )
+                )
+            match parse_phonon_settings(arguments.backend_options):
+                case Failure(error):
+                    return Failure(error)
+                case Success(settings):
+                    return Success(
+                        (
+                            io_run(make_phonon_plan(settings)),
+                            arguments.backend_options,
+                        )
+                    )
+        case _:
+            return Failure(
+                StartupError(
+                    message=f"t2s: unknown backend '{arguments.backend}'",
+                    exit_code=2,
+                )
+            )
+
+
 def build_app(
     arguments: Arguments, paragraphs: tuple[str, ...], audio: AudioLibrary | None
 ) -> IO[Result[App, StartupError]]:
     def built() -> Result[App, StartupError]:
         environment = os.environ
-        backend_binary = resolve_backend_binary(
-            arguments.backend, arguments.backend_binary, environment
-        )
-        data_format = io_run(default_data_format())
-        synthesis_command = say_command(
-            backend_binary, arguments.backend_options, data_format
-        )
+        match synthesis_startup(arguments, environment):
+            case Failure(error):
+                return Failure(error)
+            case Success(started):
+                synthesis_plan, key_material = started
         cache_keys = tuple(
-            cache_key(paragraph, arguments.backend_options, data_format)
-            for paragraph in paragraphs
+            cache_key(key_material, paragraph) for paragraph in paragraphs
         )
         cache_directory = resolve_cache_directory(
             arguments.cache_directory, Path.home()
@@ -199,7 +243,7 @@ def build_app(
                 paragraphs,
                 cache_keys,
                 cache_directory,
-                synthesis_command,
+                synthesis_plan,
                 ahead=arguments.ahead,
             )
         )

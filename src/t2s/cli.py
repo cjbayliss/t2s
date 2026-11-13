@@ -45,8 +45,9 @@ def build_parser() -> argparse.ArgumentParser:
         "-B",
         "--backend",
         default="say",
-        choices=["say"],
-        help="synthesis backend (default: say)",
+        choices=["say", "phonon"],
+        help="synthesis backend: say (macOS say(1) subprocess, default) "
+        "or phonon (in-process Gradium Phonon via the ptts package)",
     )
     parser.add_argument(
         "-O",
@@ -55,9 +56,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         metavar="KEY=VALUE",
-        help="option passed to the backend, repeatable; a single-letter "
-        "key becomes a short flag (-O r=350 -> -r 350), anything longer "
-        "a long flag (-O rate=350 -> --rate=350)",
+        help="option passed to the backend, repeatable; for say, a "
+        "single-letter key becomes a short flag (-O r=350 -> -r 350) "
+        "and anything longer a long flag (-O rate=350 -> --rate=350); "
+        "for phonon, keys are named settings: model, lang, quant, "
+        "device, voice, voice_catalog, rewrites, temperature, seed, "
+        "cfg_coef, eos_threshold, duration_delta",
     )
     parser.add_argument(
         "--width",

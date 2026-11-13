@@ -10,6 +10,7 @@ from typing import Literal, final
 
 from t2s.errors import (
     AudioLoadError,
+    PhononSynthesisError,
     PlaybackError,
     PlayerExitError,
     SaySynthesisError,
@@ -143,9 +144,8 @@ def decode_chunk(pending: bytes, data: bytes) -> tuple[str, bytes]:
     return head.decode("utf-8", "ignore"), hold
 
 
-def cache_key(text: str, options: Sequence[str], data_format: str) -> str:
-    material = "\x1f".join((*options, data_format, text))
-    return hashlib.sha1(material.encode("utf-8")).hexdigest()
+def cache_key(material: Sequence[str], text: str) -> str:
+    return hashlib.sha1("\x1f".join((*material, text)).encode("utf-8")).hexdigest()
 
 
 @final
@@ -526,6 +526,8 @@ def synthesis_failure_message(error: SynthesisError) -> str:
     match error:
         case SaySynthesisError(standard_error=standard_error):
             return collapsed_detail(standard_error)
+        case PhononSynthesisError(detail=detail):
+            return collapsed_detail(detail)
         case SynthesisShutdown():
             return "shutting down"
 

@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import subprocess
 import sys
@@ -5,6 +6,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import final
 
 import pytest
@@ -13,6 +15,7 @@ REPO = Path(__file__).resolve().parent.parent
 os.environ.setdefault("COVERAGE_PROCESS_START", str(REPO / "pyproject.toml"))
 FAKE_SAY_SRC = Path(__file__).resolve().parent / "fake_say.py"
 FAKE_PLAY_SRC = Path(__file__).resolve().parent / "fake_play.py"
+FAKE_PTTS_SRC = Path(__file__).resolve().parent / "fake_ptts.py"
 
 
 def wait_until(
@@ -85,16 +88,73 @@ def fakes(tmp_path: Path) -> Fakes:
     return Fakes(say_binary=say, play_binary=play, play_log=play_log, say_log=say_log)
 
 
+@final
+@dataclass(frozen=True, slots=True)
+class FakePhonon:
+    module_directory: Path
+    log: Path
+
+    def lines(self) -> tuple[str, ...]:
+        if not self.log.exists():
+            return ()
+        return tuple(self.log.read_text(encoding="utf-8").splitlines())
+
+    def played_texts(self, play_log: Path) -> list[str]:
+        mapping: dict[str, str] = {}
+        for line in self.lines():
+            kind, _, rest = line.partition("\t")
+            if kind == "save":
+                path, _, text = rest.partition("\t")
+                mapping[path.removesuffix(".part")] = text
+        if not play_log.exists():
+            return []
+        return [
+            mapping.get(path, path)
+            for path in play_log.read_text(encoding="utf-8").splitlines()
+            if path.strip()
+        ]
+
+    def saved_lines(self) -> tuple[str, ...]:
+        return tuple(line for line in self.lines() if line.startswith("save\t"))
+
+    def load_lines(self) -> tuple[str, ...]:
+        return tuple(line for line in self.lines() if line.startswith("load\t"))
+
+
+@pytest.fixture
+def fake_phonon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakePhonon:
+    module_directory = tmp_path / "ptts-module"
+    module_directory.mkdir()
+    module_path = module_directory / "ptts.py"
+    module_path.write_text(FAKE_PTTS_SRC.read_text(encoding="utf-8"), encoding="utf-8")
+    log = tmp_path / "phonon.log"
+    monkeypatch.setenv("T2S_FAKE_PTTS_LOG", str(log))
+    return FakePhonon(module_directory=module_directory, log=log)
+
+
+@pytest.fixture
+def fake_ptts(fake_phonon: FakePhonon, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    spec = importlib.util.spec_from_file_location("ptts", FAKE_PTTS_SRC)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(sys.modules, "ptts", module)
+    return module
+
+
 def run_t2s(
     arguments: list[str],
     fakes: Fakes | None = None,
     environment_extra: dict[str, str] | None = None,
     input: bytes | None = None,
     timeout: float = 30.0,
+    backend_bin: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     command = [sys.executable, "-m", "t2s"]
     if fakes is not None:
-        command += ["--backend-bin", fakes.say_binary, "--play-bin", fakes.play_binary]
+        command += ["--play-bin", fakes.play_binary]
+        if backend_bin:
+            command += ["--backend-bin", fakes.say_binary]
     command += arguments
     environment = os.environ.copy()
     if environment_extra:

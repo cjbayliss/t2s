@@ -120,8 +120,9 @@ def test_cache_key_is_deterministic_and_field_sensitive(
     text: str, options: list[str]
 ) -> None:
     fmt = "LEI16@22050"
-    key = cache_key(text, options, fmt)
-    assert cache_key(text, options, fmt) == key
-    assert cache_key(text + "x", options, fmt) != key
-    assert cache_key(text, options + ["rate=180"], fmt) != key
-    assert cache_key(text, options, "LEI16@999") != key
+    material = (*options, fmt)
+    key = cache_key(material, text)
+    assert cache_key(material, text) == key
+    assert cache_key(material, text + "x") != key
+    assert cache_key((*options, "rate=180", fmt), text) != key
+    assert cache_key((*options, "LEI16@999"), text) != key

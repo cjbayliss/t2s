@@ -9,6 +9,7 @@ from conftest import wait_until
 from t2s.monads import io_run
 from t2s.pure import cache_key, prefetch_window
 from t2s.synthesis import (
+    SayPlan,
     SynthesisFailed,
     SynthesisWorker,
     clear_failure,
@@ -27,7 +28,7 @@ FAKE_SAY = Path(__file__).resolve().parent / "fake_say.py"
 def spawn_worker(
     tmp_path: Path, paragraphs: list[str], ahead: int = 3
 ) -> tuple[SynthesisWorker, Path]:
-    cache_keys = [cache_key(paragraph, (), "LEI16@22050") for paragraph in paragraphs]
+    cache_keys = [cache_key(("LEI16@22050",), paragraph) for paragraph in paragraphs]
     cache = tmp_path / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     worker = io_run(
@@ -35,7 +36,7 @@ def spawn_worker(
             paragraphs,
             cache_keys,
             cache,
-            [sys.executable, str(FAKE_SAY)],
+            SayPlan(command=(sys.executable, str(FAKE_SAY))),
             ahead=ahead,
         )
     )

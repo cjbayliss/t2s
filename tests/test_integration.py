@@ -1,8 +1,9 @@
+import os
 import subprocess
 import time
 from pathlib import Path
 
-from conftest import Fakes, engine_log_environment, run_t2s, texts_played
+from conftest import FakePhonon, Fakes, engine_log_environment, run_t2s, texts_played
 
 DOC = (
     "First paragraph has a few words.\n"
@@ -34,6 +35,35 @@ def run_doc(
     if player:
         arguments += ["--player", player]
     result = run_t2s(arguments, fakes, environment_extra=environment_extra)
+    return result, cache
+
+
+def run_phonon_doc(
+    fake_phonon: FakePhonon,
+    fakes: Fakes,
+    tmp_path: Path,
+    text: str,
+    *extra: str,
+    environment_extra: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    doc = tmp_path / "doc.txt"
+    doc.write_text(text)
+    cache = tmp_path / "cache"
+    python_path = os.pathsep.join(
+        (str(fake_phonon.module_directory), os.environ.get("PYTHONPATH", ""))
+    ).rstrip(os.pathsep)
+    environment = {"PYTHONPATH": python_path}
+    if environment_extra:
+        environment.update(environment_extra)
+    arguments = [
+        str(doc),
+        "--cache-dir",
+        str(cache),
+        "-B",
+        "phonon",
+        *extra,
+    ]
+    result = run_t2s(arguments, fakes, environment_extra=environment, backend_bin=False)
     return result, cache
 
 
@@ -305,3 +335,77 @@ def test_split_long_flag(fakes: Fakes, tmp_path: Path) -> None:
     assert "1/4" in result.stdout
     assert "4/4" in result.stdout
     assert len(texts_played(fakes.say_log, play_log)) == 4
+
+
+def test_phonon_backend_reads_all_paragraphs(
+    fakes: Fakes, fake_phonon: FakePhonon, tmp_path: Path
+) -> None:
+    environment, play_log = engine_log_environment(tmp_path)
+    result, _ = run_phonon_doc(
+        fake_phonon,
+        fakes,
+        tmp_path,
+        DOC,
+        "--player",
+        "test",
+        environment_extra=environment,
+    )
+    assert result.returncode == 0, result.stderr
+    for marker in ("1/3", "2/3", "3/3"):
+        assert marker in result.stdout
+    assert "done" in result.stdout
+    assert result.stderr == ""
+    assert fake_phonon.played_texts(play_log) == PARAGRAPHS
+
+
+def test_phonon_failure_skips_paragraph(
+    fakes: Fakes, fake_phonon: FakePhonon, tmp_path: Path
+) -> None:
+    environment, play_log = engine_log_environment(tmp_path)
+    environment = dict(environment, T2S_FAKE_PTTS_FAIL_TEXT="CRASHER")
+    result, _ = run_phonon_doc(
+        fake_phonon,
+        fakes,
+        tmp_path,
+        DOC,
+        "--player",
+        "test",
+        environment_extra=environment,
+    )
+    assert result.returncode == 1, result.stderr
+    assert "could not render" in result.stderr
+    assert "phonon refused" in result.stderr
+    assert "done (with errors)" in result.stdout
+    assert fake_phonon.played_texts(play_log) == [PARAGRAPHS[0], PARAGRAPHS[2]]
+
+
+def test_phonon_unknown_option_exits_before_playback(
+    fakes: Fakes, fake_phonon: FakePhonon, tmp_path: Path
+) -> None:
+    environment, play_log = engine_log_environment(tmp_path)
+    result, _ = run_phonon_doc(
+        fake_phonon,
+        fakes,
+        tmp_path,
+        DOC,
+        "-O",
+        "nonsense=1",
+        "--player",
+        "test",
+        environment_extra=environment,
+    )
+    assert result.returncode == 2
+    assert "unknown phonon option 'nonsense'" in result.stderr
+    assert not play_log.exists()
+
+
+def test_backend_bin_is_rejected_for_phonon(fakes: Fakes, tmp_path: Path) -> None:
+    doc = tmp_path / "doc.txt"
+    doc.write_text(DOC)
+    result = run_t2s(
+        [str(doc), "-B", "phonon", "--backend-bin", fakes.say_binary],
+        fakes,
+        backend_bin=False,
+    )
+    assert result.returncode == 2
+    assert "--backend-bin does not apply to the phonon backend" in result.stderr
