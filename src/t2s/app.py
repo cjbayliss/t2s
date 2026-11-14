@@ -101,6 +101,7 @@ class Arguments:
     play_binary: str | None
     gap_milliseconds: int
     player: str
+    speed: float
 
 
 def arguments_from_namespace(namespace_arguments: argparse.Namespace) -> Arguments:
@@ -118,6 +119,7 @@ def arguments_from_namespace(namespace_arguments: argparse.Namespace) -> Argumen
         play_binary=namespace_arguments.play_binary,
         gap_milliseconds=namespace_arguments.gap,
         player=namespace_arguments.player,
+        speed=namespace_arguments.speed,
     )
 
 
@@ -255,6 +257,7 @@ def build_app(
                 arguments.gap_milliseconds,
                 environment,
                 audio=audio,
+                speed=arguments.speed,
             )
         )
         return Success(

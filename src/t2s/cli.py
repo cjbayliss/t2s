@@ -3,6 +3,7 @@ import sys
 from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
+from typing import Final
 
 from t2s.app import (
     App,
@@ -25,6 +26,9 @@ from t2s.monads import (
     io_run,
 )
 from t2s.pure import split_paragraphs
+
+minimum_speed: Final = 0.5
+maximum_speed: Final = 3.0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -139,6 +143,16 @@ def build_parser() -> argparse.ArgumentParser:
         "test (headless, for t2s's own tests), or auto "
         "(default: miniaudio, falls back to afplay)",
     )
+    parser.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        metavar="RATE",
+        help="playback speed multiplier (default: 1.0; range 0.5-3.0). "
+        "The miniaudio engine time-stretches the audio and keeps the "
+        "pitch; the afplay engine passes -r to the player, which raises "
+        "the pitch",
+    )
     parser.add_argument("--version", action="version", version=metadata.version("t2s"))
     return parser
 
@@ -216,6 +230,18 @@ def prepare_app(arguments: Arguments, text: str) -> IO[Result[App, StartupError]
                     message=(
                         f"t2s: --start {arguments.start} is out of range "
                         f"(document has {len(paragraphs)} paragraphs)"
+                    ),
+                    exit_code=2,
+                )
+            )
+        )
+    if not minimum_speed <= arguments.speed <= maximum_speed:
+        return io_pure(
+            Failure(
+                StartupError(
+                    message=(
+                        f"t2s: --speed {arguments.speed} is out of range "
+                        f"({minimum_speed} to {maximum_speed})"
                     ),
                     exit_code=2,
                 )

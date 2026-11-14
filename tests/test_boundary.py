@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 from t2s.app import Arguments, arguments_from_namespace
-from t2s.cli import build_parser
+from t2s.cli import build_parser, prepare_app
+from t2s.monads import Failure, io_run
 from t2s.pure import (
     engine_choice,
     gap_supported,
@@ -28,6 +31,7 @@ def test_arguments_from_namespace_maps_defaults_and_overrides() -> None:
         play_binary=None,
         gap_milliseconds=0,
         player="auto",
+        speed=1.0,
     )
     overrides = arguments_from_namespace(
         build_parser().parse_args(
@@ -57,6 +61,8 @@ def test_arguments_from_namespace_maps_defaults_and_overrides() -> None:
                 "150",
                 "--player",
                 "afplay",
+                "--speed",
+                "1.75",
             ]
         )
     )
@@ -74,6 +80,7 @@ def test_arguments_from_namespace_maps_defaults_and_overrides() -> None:
         play_binary="/bin/afplay",
         gap_milliseconds=150,
         player="afplay",
+        speed=1.75,
     )
 
 
@@ -146,3 +153,14 @@ def test_say_command_translates_options_and_appends_wave_output() -> None:
         "--data-format",
         "LEI16@22050",
     )
+
+
+@pytest.mark.parametrize("speed", ("0.4", "3.1"))
+def test_prepare_app_rejects_speed_out_of_range(speed: str) -> None:
+    arguments = arguments_from_namespace(build_parser().parse_args(["--speed", speed]))
+    match io_run(prepare_app(arguments, "hello")):
+        case Failure(error):
+            assert error.exit_code == 2
+            assert "--speed" in error.message
+        case _:
+            raise AssertionError("expected out-of-range speed to fail")

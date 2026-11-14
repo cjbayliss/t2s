@@ -43,6 +43,7 @@ from t2s.pure import (
     stream_prime,
     stream_stop,
 )
+from t2s.stretch import time_stretched
 
 if TYPE_CHECKING:
     import miniaudio
@@ -225,6 +226,7 @@ class StreamEngine:
     audio: AudioLibrary | None
     cell: Reference[StreamCellState]
     prime_async: bool = False
+    speed: float = 1.0
     load: Callable[[StreamEngine, Path], IO[bytes]] = load_wav
 
 
@@ -241,6 +243,7 @@ def make_stream_engine(
     drain: bool = False,
     audio: AudioLibrary | None = None,
     prime_async: bool = False,
+    speed: float = 1.0,
 ) -> IO[StreamEngine]:
     initial_cell = StreamCellState(
         stream=StreamState(),
@@ -264,6 +267,7 @@ def make_stream_engine(
                 audio=audio,
                 cell=cell,
                 prime_async=prime_async,
+                speed=speed,
                 load=load,
             )
         ),
@@ -291,8 +295,7 @@ def ensure_device(engine: StreamEngine, path: Path) -> IO[None]:
         cell = io_run(read_reference(engine.cell))
         if audio is None or cell.device is not None:
             return
-        with wave.open(str(path), "rb") as wav:
-            rate, channels = wav.getframerate(), wav.getnchannels()
+        rate, channels = io_run(wave_format(path))
         io_run(set_stream_format(engine, rate, channels))
         module = audio.module
         try:
@@ -420,11 +423,33 @@ def start_drain(engine: StreamEngine) -> IO[None]:
     return io(started)
 
 
+def wave_format(path: Path) -> IO[tuple[int, int]]:
+    def read_format() -> tuple[int, int]:
+        with wave.open(str(path), "rb") as wav:
+            return wav.getframerate(), wav.getnchannels()
+
+    return io(read_format)
+
+
+def load_playback_audio(engine: StreamEngine, path: Path) -> IO[bytes]:
+    if engine.speed == 1.0:
+        return engine.load(engine, path)
+
+    def playback_data(data: bytes) -> IO[bytes]:
+        def stretched() -> bytes:
+            rate, channels = io_run(wave_format(path))
+            return time_stretched(data, rate, channels, engine.speed)
+
+        return io(stretched)
+
+    return io_bind(engine.load(engine, path), playback_data)
+
+
 def stream_engine_play(engine: StreamEngine, index: int, path: Path) -> IO[None]:
     def played() -> None:
         try:
             io_run(ensure_device(engine, path))
-            data = io_run(engine.load(engine, path))
+            data = io_run(load_playback_audio(engine, path))
         except load_failures() as exception:
             engine.events.put(StreamCrashed(index, audio_load_error(path, exception)))
             return
@@ -445,7 +470,7 @@ def stream_engine_play(engine: StreamEngine, index: int, path: Path) -> IO[None]
 def prime_now(engine: StreamEngine, index: int, path: Path) -> IO[None]:
     def primed() -> None:
         try:
-            data = io_run(engine.load(engine, path))
+            data = io_run(load_playback_audio(engine, path))
         except load_failures():
             return
         io_run(
@@ -511,7 +536,12 @@ class ProcessEngine:
     state: Reference[ProcessState]
 
 
-def make_process_engine(play_command: Sequence[str]) -> IO[ProcessEngine]:
+def make_process_engine(
+    play_command: Sequence[str], speed: float = 1.0
+) -> IO[ProcessEngine]:
+    command = (
+        (*play_command, "-r", f"{speed:g}") if speed != 1.0 else tuple(play_command)
+    )
     return io_bind(
         make_reference(
             ProcessState(process=None, current_index=None, suppress_report=True)
@@ -519,7 +549,7 @@ def make_process_engine(play_command: Sequence[str]) -> IO[ProcessEngine]:
         lambda state: io_pure(
             ProcessEngine(
                 events=queue.SimpleQueue(),
-                command=tuple(play_command),
+                command=command,
                 state=state,
             )
         ),
@@ -678,6 +708,7 @@ def make_engine(
     gap_milliseconds: int = 0,
     environment: Mapping[str, str] | None = None,
     audio: AudioLibrary | None = None,
+    speed: float = 1.0,
 ) -> IO[Engine]:
     def built() -> Engine:
         match engine_choice(player, audio is not None):
@@ -687,11 +718,12 @@ def make_engine(
                         gap_milliseconds=gap_milliseconds,
                         audio=audio,
                         prime_async=True,
+                        speed=speed,
                     )
                 )
             case "test":
                 return io_run(make_test_engine(gap_milliseconds, environment))
             case _:
-                return io_run(make_process_engine(play_command))
+                return io_run(make_process_engine(play_command, speed=speed))
 
     return io(built)
