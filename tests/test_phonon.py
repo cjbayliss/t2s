@@ -13,6 +13,7 @@ from t2s.phonon import (
     make_phonon_plan,
     parse_phonon_settings,
     phonon_render,
+    resampled_wav,
 )
 
 
@@ -44,6 +45,7 @@ def test_full_valid_option_set() -> None:
                 "cfg_coef=1.5",
                 "eos_threshold=0.9",
                 "duration_delta=-0.1",
+                "sample_rate=48000",
             )
         )
     )
@@ -60,6 +62,7 @@ def test_full_valid_option_set() -> None:
         cfg_coef=1.5,
         eos_threshold=0.9,
         duration_delta=-0.1,
+        sample_rate=48000,
     )
 
 
@@ -93,6 +96,60 @@ def test_malformed_option_fails(option: str, expected_fragment: str) -> None:
 def test_duplicate_key_last_wins() -> None:
     settings = unwrapped(parse_phonon_settings(("voice=Amy", "voice=Easton")))
     assert settings.voice == "Easton"
+
+
+def make_fake_ffmpeg(directory: Path) -> None:
+    script = directory / "ffmpeg"
+    script.write_text(
+        "#!/bin/sh\n"
+        'prev=""\n'
+        'out=""\n'
+        'for arg in "$@"; do\n'
+        '  out="$arg"\n'
+        '  prev="$arg"\n'
+        "done\n"
+        'echo resampled > "$out"\n'
+    )
+    script.chmod(0o755)
+
+
+def test_resampled_wav_replaces_the_rendered_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    make_fake_ffmpeg(tmp_path)
+    source = tmp_path / "chunk.wav"
+    source.write_bytes(b"wav bytes")
+    io_run(resampled_wav(source, 48000))
+    assert source.read_bytes() == b"resampled\n"
+    assert not (tmp_path / "chunk.resample-48000.wav").exists()
+
+
+def test_resample_failure_reports_ffmpeg_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    source = tmp_path / "chunk.wav"
+    source.write_bytes(b"wav bytes")
+    with pytest.raises(PhononSynthesisError) as raised:
+        io_run(resampled_wav(source, 48000))
+    assert "ffmpeg could not resample to 48000 Hz" in raised.value.detail
+    assert not (tmp_path / "chunk.resample-48000.wav").exists()
+
+
+def test_sample_rate_setting_resamples_rendered_paragraphs(
+    fake_ptts: ModuleType,
+    fake_phonon: FakePhonon,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    make_fake_ffmpeg(tmp_path)
+    settings = unwrapped(parse_phonon_settings(("sample_rate=48000",)))
+    plan = io_run(make_phonon_plan(settings))
+    io_run(phonon_render(plan, "hello", tmp_path / "one.wav"))
+    assert (tmp_path / "one.wav").stat().st_size > 0
+    assert not (tmp_path / "one.resample-48000.wav").exists()
 
 
 def test_plan_renders_paragraphs_with_a_single_model_load(

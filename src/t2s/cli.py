@@ -61,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
         "and anything longer a long flag (-O rate=350 -> --rate=350); "
         "for phonon, keys are named settings: model, lang, quant, "
         "device, voice, voice_catalog, rewrites, temperature, seed, "
-        "cfg_coef, eos_threshold, duration_delta",
+        "cfg_coef, eos_threshold, duration_delta, sample_rate",
     )
     parser.add_argument(
         "--width",

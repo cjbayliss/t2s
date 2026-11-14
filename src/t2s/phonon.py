@@ -1,6 +1,8 @@
+import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
+from subprocess import CompletedProcess
 from types import UnionType
 from typing import Any, Protocol, final, get_args, get_origin, get_type_hints
 
@@ -35,6 +37,7 @@ class PhononSettings:
     cfg_coef: float | None = None
     eos_threshold: float | None = None
     duration_delta: float | None = None
+    sample_rate: int | None = None
 
 
 class PhononSpeechModel(Protocol):
@@ -175,6 +178,52 @@ def make_phonon_plan(settings: PhononSettings) -> IO[PhononPlan]:
     )
 
 
+def run_ffmpeg(
+    path: Path, sample_rate: int, upsampled_path: Path
+) -> CompletedProcess[str]:
+    # precision and filter_size are raised from their defaults so the 24 kHz
+    # model output is upsampled with as little ringing as possible, matching
+    # what a browser-grade resampler delivers
+    return subprocess.run(
+        (
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            str(path),
+            "-af",
+            f"aresample={sample_rate}:resampler=swr:precision=28:filter_size=64",
+            "-ar",
+            str(sample_rate),
+            str(upsampled_path),
+        ),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def resampled_wav(path: Path, sample_rate: int) -> IO[None]:
+    def resampled() -> None:
+        upsampled_path = path.with_name(f"{path.stem}.resample-{sample_rate}.wav")
+        try:
+            completed = run_ffmpeg(path, sample_rate, upsampled_path)
+        except OSError as error:
+            raise PhononSynthesisError(
+                f"ffmpeg could not resample to {sample_rate} Hz: {error}"
+            ) from error
+        if completed.returncode != 0 or not upsampled_path.exists():
+            upsampled_path.unlink(missing_ok=True)
+            raise PhononSynthesisError(
+                f"ffmpeg could not resample to {sample_rate} Hz: "
+                f"{completed.stderr.strip()}"
+            )
+        upsampled_path.replace(path)
+
+    return io(resampled)
+
+
 def phonon_render(plan: PhononPlan, text: str, path: Path) -> IO[None]:
     def rendered() -> None:
         model = io_run(read_reference(plan.model))
@@ -187,5 +236,7 @@ def phonon_render(plan: PhononPlan, text: str, path: Path) -> IO[None]:
             # the Rust binding raises heterogeneous exception types, so the
             # catch has to be broad; the detail keeps the original shape
             raise PhononSynthesisError(f"{type(error).__name__}: {error}") from error
+        if plan.settings.sample_rate is not None:
+            io_run(resampled_wav(path, plan.settings.sample_rate))
 
     return io(rendered)

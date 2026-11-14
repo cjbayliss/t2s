@@ -32,6 +32,8 @@ uv tool install git+https://github.com/cjbayliss/t2s --with ptts
 - Optional: the `ptts` Python package for the optional Phonon backend
   (installed with the `phonon` extra; it ships prebuilt wheels for
   supported platforms and needs no PyTorch)
+- Optional: `ffmpeg` on `PATH` for Phonon's `-O sample_rate=...`
+  upsampling
 - Optional (if using the say backend): macOS
 
 ## Usage
